@@ -1,17 +1,35 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { VideoCamera, Setting, List, Upload } from '@element-plus/icons-vue'
+import { VideoCamera, Setting, List, Upload, Coin } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import DetectionWorker from '../workers/detection.worker.ts?worker'
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
-const modelStatus = ref('未加载') // 未加载 | 加载中 | 已就绪
+const videoContainerRef = ref<HTMLDivElement | null>(null)
+const modelStatus = ref('未加载') 
 
 let worker: Worker | null = null
 let isDetecting = false
 let isWorkerBusy = false
+
+const FPS = 30
+const frameInterval = 1 / FPS
+
+// 数据库连接
+const dbForm = ref({
+  type: 'MySQL',
+  host: '127.0.0.1',
+  port: '3306',
+  database: 'traffic_db',
+  username: 'root',
+  password: ''
+})
+
+const handleDbConnect = () => {
+  ElMessage.success(`正在连接到 ${dbForm.value.type} 数据库...`)
+}
 
 const tableData = ref([
   {
@@ -22,18 +40,18 @@ const tableData = ref([
     width: '1.8m',
     height: '1.5m',
     speed: '60km/h',
-    time: '2023-10-27 10:00:00',
+    time: '2026-3-17 10:00:00',
     confidence: '0.98'
   },
   {
     id: 2,
     plate: '粤B·66666',
-    type: '行人',
+    type: '三轮车',
     length: '0.6m',
     width: '0.5m',
     height: '1.7m',
     speed: '5km/h',
-    time: '2023-10-27 10:00:05',
+    time: '2026-3-17 10:00:05',
     confidence: '0.89'
   },
   {
@@ -44,7 +62,7 @@ const tableData = ref([
     width: '0.6m',
     height: '1.6m',
     speed: '15km/h',
-    time: '2023-10-27 10:00:10',
+    time: '2026-3-17 10:00:10',
     confidence: '0.92'
   }
 ])
@@ -55,7 +73,7 @@ const handleVideoChange = (uploadFile: UploadFile) => {
     videoRef.value.src = url
     // 重置状态
     isDetecting = false
-    stopDetectionLoop()
+    isWorkerBusy = false
     modelStatus.value = '未加载'
     if (canvasRef.value) {
       const ctx = canvasRef.value.getContext('2d')
@@ -64,48 +82,35 @@ const handleVideoChange = (uploadFile: UploadFile) => {
   }
 }
 
-let animationFrameId: number | null = null
 let offscreenCanvas: HTMLCanvasElement | null = null
 let offscreenCtx: CanvasRenderingContext2D | null = null
 
-// 初始化离屏 Canvas
+// 初始化Canvas
 const initOffscreenCanvas = () => {
   if (!videoRef.value) return
   if (!offscreenCanvas) {
     offscreenCanvas = document.createElement('canvas')
     offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true })
   }
-  // 设置为视频原始分辨率
   offscreenCanvas.width = videoRef.value.videoWidth
   offscreenCanvas.height = videoRef.value.videoHeight
 }
 
-// 停止检测循环
-const stopDetectionLoop = () => {
-  if (animationFrameId !== null) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = null
-  }
-  isWorkerBusy = false
-}
 
-// (模拟方法已移除，由 Worker 接管真实推理)
-
-// 在顶层透明 Canvas 上绘制检测框
+// 在顶层Canvas上绘制检测框
 const drawBoundingBoxes = (boxes: any[], originalWidth: number, originalHeight: number) => {
   if (!canvasRef.value || !videoRef.value) return
   const ctx = canvasRef.value.getContext('2d')
   if (!ctx) return
 
-  // 1. 获取 Canvas 的实际渲染尺寸
+  // 1.获取Canvas的实际渲染尺寸
   const canvasWidth = canvasRef.value.width
   const canvasHeight = canvasRef.value.height
 
-  // 2. 清空上一帧
+  // 2.清空上一帧
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
 
-  // 3. 计算视频的 object-fit: contain 实际显示区域
-  // 视频容器宽高比与视频原始宽高比的比较
+  // 3.计算视频的实际显示区域
   const containerRatio = canvasWidth / canvasHeight
   const videoRatio = originalWidth / originalHeight
 
@@ -126,6 +131,11 @@ const drawBoundingBoxes = (boxes: any[], originalWidth: number, originalHeight: 
     offsetY = (canvasHeight - renderHeight) / 2
   }
 
+  // 绘制当前视频帧到Canvas
+  if (offscreenCanvas) {
+    ctx.drawImage(offscreenCanvas, offsetX, offsetY, renderWidth, renderHeight)
+  }
+
   // 4. 计算缩放比例 (原始尺寸 -> 实际渲染尺寸)
   const scaleX = renderWidth / originalWidth
   const scaleY = renderHeight / originalHeight
@@ -139,50 +149,52 @@ const drawBoundingBoxes = (boxes: any[], originalWidth: number, originalHeight: 
     const h = box.height * scaleY
 
     // 根据类型获取颜色
-    const color = box.type === '汽车' ? '#00ffff' : box.type === '行人' ? '#ff00ff' : '#e6a23c'
+    let color = '#00ffff' 
+    switch (box.type) {
+      case '汽车': color = '#00ffff'; break;       
+      case '面包车': color = '#ff9900'; break;     
+      case '公交车': color = '#ff00ff'; break;    
+      case '三轮车': color = '#00ff00'; break;     
+      case '骑电动车的人': color = '#ffff00'; break; 
+      case '骑自行车的人': color = '#0099ff'; break; 
+      case '行人': color = '#ff3333'; break;      
+    }
 
-    // 画框
     ctx.beginPath()
-    ctx.lineWidth = 2
+    ctx.lineWidth = 1.5 
     ctx.strokeStyle = color
     ctx.rect(x, y, w, h)
     ctx.stroke()
 
-    // 绘制半透明背景的标签
-    const label = `${box.type} ${box.confidence}`
-    ctx.font = '14px Arial'
+    const label = `${box.type}`
+    ctx.font = '10px Arial'
     const textMetrics = ctx.measureText(label)
     const textWidth = textMetrics.width
     
-    // 标签背景
     ctx.fillStyle = color
-    ctx.fillRect(x, y - 22, textWidth + 10, 22)
+    ctx.globalAlpha = 0.85
+    ctx.fillRect(x, y - 16, textWidth + 8, 16)
+    ctx.globalAlpha = 1.0 
     
-    // 标签文字
-    ctx.fillStyle = '#000000'
-    ctx.fillText(label, x + 5, y - 6)
+    ctx.fillStyle = '#000000' 
+    ctx.fillText(label, x + 4, y - 4)
   })
 }
 
-const loopDetection = () => {
-  if (!videoRef.value || videoRef.value.paused || videoRef.value.ended || !isDetecting) {
-    animationFrameId = requestAnimationFrame(loopDetection)
-    return
-  }
+const onVideoSeeked = () => {
+  if (!isDetecting || !videoRef.value) return
 
   if (offscreenCanvas && offscreenCtx && !isWorkerBusy && worker) {
     isWorkerBusy = true
-    // 将当前视频帧绘制到离屏 Canvas
+    // 将当前视频帧绘制到Canvas
     offscreenCtx.drawImage(videoRef.value, 0, 0, offscreenCanvas.width, offscreenCanvas.height)
     
-    // 提取 ImageData
+    // 提取ImageData
     const imageData = offscreenCtx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height)
     
-    // 发送给 Worker 进行真实推理
+    // Worker进行推理
     worker.postMessage({ type: 'detect', payload: { imageData } })
   }
-
-  animationFrameId = requestAnimationFrame(loopDetection)
 }
 
 const startDetection = () => {
@@ -202,17 +214,22 @@ const startDetection = () => {
         modelStatus.value = '已就绪'
         console.log("Worker init done, starting detection loop");
         if (videoRef.value) {
-          videoRef.value.play()
           initOffscreenCanvas()
-          stopDetectionLoop()
           isDetecting = true
-          loopDetection()
+          videoRef.value.currentTime = 0.001 // 触发第一次 seeked
         }
       } else if (type === 'detect_done') {
         isWorkerBusy = false
-        console.log("Detect done, payload:", payload);
         if (videoRef.value) {
            drawBoundingBoxes(payload, videoRef.value.videoWidth, videoRef.value.videoHeight)
+           
+           // 步进下一帧
+           if (videoRef.value.currentTime < videoRef.value.duration) {
+             videoRef.value.currentTime += frameInterval
+           } else {
+             isDetecting = false
+             ElMessage.success('视频处理完成')
+           }
         }
       } else if (type === 'error') {
         ElMessage.error(`模型异常: ${error}`)
@@ -223,25 +240,21 @@ const startDetection = () => {
     }
     worker.postMessage({ type: 'init' })
   } else {
-    // Worker 已经初始化过了，直接跑
+    // Worker已经初始化过了
     modelStatus.value = '已就绪'
     if (videoRef.value) {
-      videoRef.value.play()
       initOffscreenCanvas()
-      stopDetectionLoop()
       isDetecting = true
-      loopDetection()
+      videoRef.value.currentTime = 0.001
     }
   }
 }
 
-// 确保 canvas 尺寸与 video 容器实际显示尺寸一致
+// 确保canvas尺寸与video容器实际显示尺寸一致
 const resizeCanvas = () => {
-  if (videoRef.value && canvasRef.value) {
-    // 这里我们将 Canvas 的内部分辨率设置为与其 CSS 显示尺寸完全1:1一致
-    // 这样可以在上面进行准确的坐标换算
-    canvasRef.value.width = videoRef.value.clientWidth
-    canvasRef.value.height = videoRef.value.clientHeight
+  if (videoContainerRef.value && canvasRef.value) {
+    canvasRef.value.width = videoContainerRef.value.clientWidth
+    canvasRef.value.height = videoContainerRef.value.clientHeight
   }
 }
 
@@ -263,9 +276,11 @@ const updateTime = () => {
 }
 
 onMounted(() => {
-  if (videoRef.value) {
+  if (videoContainerRef.value) {
     resizeObserver = new ResizeObserver(resizeCanvas)
-    resizeObserver.observe(videoRef.value)
+    resizeObserver.observe(videoContainerRef.value)
+  }
+  if (videoRef.value) {
     videoRef.value.addEventListener('loadedmetadata', resizeCanvas)
     videoRef.value.addEventListener('loadedmetadata', initOffscreenCanvas) // 视频加载后初始化离屏Canvas
   }
@@ -274,8 +289,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (resizeObserver && videoRef.value) {
-    resizeObserver.unobserve(videoRef.value)
+  if (resizeObserver && videoContainerRef.value) {
+    resizeObserver.unobserve(videoContainerRef.value)
   }
   if (videoRef.value) {
     videoRef.value.removeEventListener('loadedmetadata', resizeCanvas)
@@ -284,7 +299,6 @@ onUnmounted(() => {
   if (timeTimer) {
     clearInterval(timeTimer)
   }
-  stopDetectionLoop()
 })
 </script>
 
@@ -335,8 +349,8 @@ onUnmounted(() => {
                 </div>
               </div>
             </template>
-            <div class="video-container">
-              <video ref="videoRef" controls muted class="tech-video"></video>
+            <div class="video-container" ref="videoContainerRef">
+              <video ref="videoRef" muted class="tech-video" @seeked="onVideoSeeked"></video>
               <canvas ref="canvasRef" class="tech-canvas"></canvas>
               <div class="scan-line"></div>
             </div>
@@ -352,11 +366,11 @@ onUnmounted(() => {
               </div>
             </template>
             <el-form label-position="top" class="config-form">
-              <el-form-item label="目标检测模型">
-                <el-input readonly value="RT-DETR (ONNX)" class="tech-input" />
+              <el-form-item label="交通要素识别模型">
+                <el-input readonly value="RS-DETR" class="tech-input" />
               </el-form-item>
-              <el-form-item label="OCR模型">
-                <el-input readonly value="Tesseract.js" class="tech-input" />
+              <el-form-item label="车牌识别模型">
+                <el-input readonly value="PaddleOCR" class="tech-input" />
               </el-form-item>
               <el-form-item label="模型加载状态" class="status-item">
                 <div :class="['status-indicator', modelStatus === '已就绪' ? 'ready' : modelStatus === '加载中' ? 'loading' : 'offline']">
@@ -364,6 +378,62 @@ onUnmounted(() => {
                   <span class="text">{{ modelStatus }}</span>
                 </div>
               </el-form-item>
+            </el-form>
+          </el-card>
+
+          <!-- 最右侧：数据库连接区域 -->
+          <el-card class="tech-panel db-panel" shadow="never">
+            <template #header>
+              <div class="panel-header">
+                <span class="panel-title">
+                  <el-icon><Coin /></el-icon> 关系型数据库连接
+                </span>
+              </div>
+            </template>
+            <el-form label-position="top" class="config-form compact-form" :model="dbForm">
+              <el-form-item label="数据库类型">
+                <el-select v-model="dbForm.type" class="tech-input" style="width: 100%" popper-class="tech-select-popper">
+                  <el-option label="MySQL" value="MySQL" />
+                  <el-option label="SQL Server" value="SQL Server" />
+                  <el-option label="PostgreSQL" value="PostgreSQL" />
+                </el-select>
+              </el-form-item>
+              
+              <el-row :gutter="15">
+                <el-col :span="16">
+                  <el-form-item label="主机地址">
+                    <el-input v-model="dbForm.host" class="tech-input" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="端口">
+                    <el-input v-model="dbForm.port" class="tech-input" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <el-form-item label="数据库名">
+                <el-input v-model="dbForm.database" class="tech-input" />
+              </el-form-item>
+
+              <el-row :gutter="15">
+                <el-col :span="12">
+                  <el-form-item label="用户名">
+                    <el-input v-model="dbForm.username" class="tech-input" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="密码">
+                    <el-input v-model="dbForm.password" type="password" show-password class="tech-input" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <div style="margin-top: 10px;">
+                <el-button type="primary" class="tech-btn primary-btn" style="width: 100%" @click="handleDbConnect">
+                  连接数据库
+                </el-button>
+              </div>
             </el-form>
           </el-card>
         </div>
@@ -399,7 +469,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 背景与布局 */
+
 .dashboard-container {
   width: 100vw;
   height: 100vh;
@@ -441,7 +511,7 @@ onUnmounted(() => {
 /* 标题样式 */
 .header {
   text-align: center;
-  padding-bottom: 20px;
+  padding-bottom: 18px;
   position: relative;
 }
 
@@ -470,10 +540,10 @@ onUnmounted(() => {
 
 .real-time {
   position: absolute;
-  right: 20px;
+  right: 22px;
   bottom: 5px;
   color: #00ffff;
-  font-size: 16px;
+  font-size: 18px;
   font-family: 'Courier New', Courier, monospace;
   font-weight: bold;
   text-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
@@ -508,7 +578,6 @@ onUnmounted(() => {
   background-position: center;
 }
 
-/* 核心内容区 */
 .main-content {
   display: flex;
   flex-direction: column;
@@ -544,7 +613,7 @@ onUnmounted(() => {
   overflow: visible;
 }
 
-/* 增强四角装饰 */
+/* 四角装饰 */
 .tech-panel::before {
   content: '';
   position: absolute;
@@ -585,7 +654,12 @@ onUnmounted(() => {
 
 .config-panel {
   flex: 1;
-  min-width: 320px;
+  min-width: 250px;
+}
+
+.db-panel {
+  flex: 1.2;
+  min-width: 300px;
 }
 
 .table-panel {
@@ -601,7 +675,7 @@ onUnmounted(() => {
 
 .panel-title {
   color: #00ffff;
-  font-size: 16px;
+  font-size: 22px;
   font-weight: bold;
   text-shadow: 0 0 8px rgba(0, 255, 255, 0.8);
   display: flex;
@@ -615,7 +689,7 @@ onUnmounted(() => {
   align-items: center;
 }
 
-/* 发光按钮定制 */
+/* 发光按钮 */
 :deep(.tech-btn) {
   background: rgba(0, 150, 255, 0.15) !important;
   border: 1px solid rgba(0, 210, 255, 0.5) !important;
@@ -664,10 +738,13 @@ onUnmounted(() => {
 }
 
 .tech-video {
+  opacity: 0;
+  position: absolute;
+  pointer-events: none;
+  z-index: -1;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  z-index: 1;
 }
 
 .tech-canvas {
@@ -701,9 +778,18 @@ onUnmounted(() => {
   gap: 15px;
 }
 
+.compact-form {
+  padding: 15px 20px;
+  gap: 10px;
+}
+
+.compact-form :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
 :deep(.el-form-item__label) {
   color: #00a8ff !important;
-  font-size: 14px;
+  font-size: 18px;
   text-shadow: 0 0 2px rgba(0, 168, 255, 0.5);
   padding-bottom: 4px !important;
   line-height: 1.2;
@@ -725,6 +811,30 @@ onUnmounted(() => {
   color: #00ffff !important;
   text-shadow: 0 0 5px rgba(0, 255, 255, 0.5) !important;
   font-weight: bold;
+}
+
+/* 下拉菜单弹窗定制 */
+:deep(.tech-select-popper) {
+  background: rgba(0, 30, 60, 0.9) !important;
+  border: 1px solid rgba(0, 210, 255, 0.5) !important;
+  box-shadow: 0 0 15px rgba(0, 210, 255, 0.3) !important;
+  backdrop-filter: blur(10px);
+}
+
+:deep(.tech-select-popper .el-select-dropdown__item) {
+  color: #e0e0e0;
+}
+
+:deep(.tech-select-popper .el-select-dropdown__item.hover),
+:deep(.tech-select-popper .el-select-dropdown__item:hover) {
+  background-color: rgba(0, 210, 255, 0.2) !important;
+  color: #00ffff;
+}
+
+:deep(.tech-select-popper .el-select-dropdown__item.selected) {
+  color: #00ffff;
+  font-weight: bold;
+  background-color: rgba(0, 210, 255, 0.1) !important;
 }
 
 /* 状态指示器 */
@@ -783,7 +893,7 @@ onUnmounted(() => {
   100% { box-shadow: 0 0 0 0 rgba(103, 194, 58, 0); }
 }
 
-/* 表格深度定制 */
+/* 表格 */
 .table-container {
   flex: 1;
   padding: 15px;

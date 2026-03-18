@@ -1,22 +1,27 @@
 import * as ort from 'onnxruntime-web';
 
-// 禁用多线程以提高兼容性
 ort.env.wasm.numThreads = 1; 
-// 使用绝对 URL 路径，避免 Vite 尝试解析 public 目录下的 .mjs 模块
+// 使用绝对URL路径
 ort.env.wasm.wasmPaths = self.location.origin + '/ort-wasm/';
 
 let session: ort.InferenceSession | null = null;
 
-// 根据实际数据集或导出的模型调整类别名称
-const classNames = ['汽车', '行人', '骑行者']; 
+const classNames = [
+  '汽车', 
+  '三轮车', 
+  '面包车', 
+  '公交车', 
+  '行人', 
+  '骑自行车的人', 
+  '骑电动车的人'
+]; 
 
 self.onmessage = async (e: MessageEvent) => {
   const { type, payload } = e.data;
 
   if (type === 'init') {
     try {
-      // 在 public 目录下的模型可以通过根路径直接访问
-      session = await ort.InferenceSession.create('/detection_dair.onnx', { executionProviders: ['wasm'] });
+      session = await ort.InferenceSession.create('/detection_dair.onnx', { executionProviders: ['webgpu', 'wasm'] });
       self.postMessage({ type: 'init_done' });
     } catch (error: any) {
       console.error("ONNX Runtime 初始化异常:", error);
@@ -33,7 +38,7 @@ self.onmessage = async (e: MessageEvent) => {
     const { imageData } = payload;
     
     try {
-      // 1. 预处理 (Resize to 640x640 + 归一化)
+      // 1. 预处理 (Resize to 640x640+归一化)
       const tensor = preprocess(imageData);
       
       // 2. 推理
@@ -42,7 +47,7 @@ self.onmessage = async (e: MessageEvent) => {
       feeds[inputName] = tensor;
       const results = await session.run(feeds);
       
-      // 3. 后处理 (解析 Bounding Boxes)
+      // 3. 后处理 (解析Bounding Boxes)
       const boxes = postprocess(results, imageData.width, imageData.height);
       
       // 将结果发回主线程
@@ -74,12 +79,11 @@ function preprocess(imageData: ImageData): ort.Tensor {
       
       const destIndex = y * targetSize + x;
       
-      // RT-DETR 的常见输入格式为 NCHW, RGB 排序
-      // R 通道
+      // R通道
       float32Data[destIndex] = data[srcIndex] / 255.0;
-      // G 通道
+      // G通道
       float32Data[targetSize * targetSize + destIndex] = data[srcIndex + 1] / 255.0;
-      // B 通道
+      // B通道
       float32Data[2 * targetSize * targetSize + destIndex] = data[srcIndex + 2] / 255.0;
     }
   }
@@ -88,18 +92,16 @@ function preprocess(imageData: ImageData): ort.Tensor {
 }
 
 /**
- * 结果后处理: 解析模型输出的 Tensor 并还原到原始画面坐标
+ * 结果后处理: 解析模型输出的Tensor并还原到原始画面坐标
  */
 function postprocess(results: any, origWidth: number, origHeight: number) {
   const boxes: any[] = [];
   
-  // 打印所有输出节点以便调试
   console.log("模型输出节点:", Object.keys(results));
 
   let boxesTensor: ort.Tensor | null = null;
   let scoresTensor: ort.Tensor | null = null;
 
-  // 尝试自动匹配 boxes 和 scores (RT-DETR 常见双输出)
   for (const key in results) {
     const tensor = results[key];
     const dims = tensor.dims;
