@@ -1,0 +1,23 @@
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #030816;
+  background-image: 
+    linear-gradient(rgba(0, 210, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 210, 255, 0.05) 1px, transparent 1px);
+  background-size: 30px 30px;
+  overflow: hidden;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
