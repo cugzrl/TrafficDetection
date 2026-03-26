@@ -17,13 +17,13 @@ let wsInstance: WebSocket | null = null
 
 const categories = ['汽车', '三轮车', '面包车', '公交车', '行人', '骑自行车的人', '骑电动车的人']
 const colorMap: Record<string, string> = {
-  '汽车': '#00d2ff',
-  '三轮车': '#ff9900',
-  '面包车': '#e6a23c',
-  '公交车': '#b39ddb',
-  '行人': '#ff3333',
-  '骑自行车的人': '#00ff00',
-  '骑电动车的人': '#ffff00'
+  '汽车': '#2EABFF',
+  '三轮车': '#EF6B6B',
+  '面包车': '#F273AA',
+  '公交车': '#927FF0',
+  '行人': '#98F07F',
+  '骑自行车的人': '#F0DD7F',
+  '骑电动车的人': '#FFA270'
 }
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -229,16 +229,6 @@ const getSecurityTagType = (level: number) => {
   }
 }
 
-const getTypeTagType = (type: string) => {
-  if (['汽车', '面包车', '公交车'].includes(type)) {
-    return '' // 默认青蓝色
-  } else if (['三轮车', '骑自行车的人', '骑电动车的人'].includes(type)) {
-    return 'warning'
-  } else if (type === '行人') {
-    return 'success'
-  }
-  return 'info'
-}
 
 const handleVideoChange = async (uploadFile: UploadFile) => {
   if (uploadFile && uploadFile.raw) {
@@ -724,7 +714,11 @@ onUnmounted(() => {
                 <el-table-column prop="time" label="时间" align="center" />
                 <el-table-column prop="type" label="目标类型" align="center">
                   <template #default="scope">
-                    <el-tag effect="dark" :type="getTypeTagType(scope.row.type)" class="type-tag">
+                    <el-tag 
+                      effect="dark" 
+                      class="type-tag"
+                      :style="{ backgroundColor: colorMap[scope.row.type] }"
+                    >
                       {{ scope.row.type }}
                     </el-tag>
                   </template>
@@ -1215,14 +1209,14 @@ onUnmounted(() => {
   padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 5px;
   overflow-y: auto;
   flex: 1;
 }
 
 .compact-form {
   padding: 15px 20px;
-  gap: 10px;
+  gap: 15px;
   overflow-y: auto;
   flex: 1;
 }
@@ -1539,7 +1533,7 @@ onUnmounted(() => {
 .plate-text {
   font-weight: bold;
   color: #00d2ff;
-  text-shadow: 0 0 8px rgba(0, 210, 255, 0.8);
+  text-shadow: 0 0 9px rgba(0, 210, 255, 0.8);
   font-family: 'Courier New', Courier, monospace;
   font-size: 15px;
 }
@@ -1553,7 +1547,7 @@ onUnmounted(() => {
 .size-text {
   color: #a3d9ff;
   font-family: 'Courier New', Courier, monospace;
-  font-size: 13px;
+  font-size: 16px;
   letter-spacing: 0.5px;
 }
 
