@@ -1,9 +1,30 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { VideoCamera, Setting, List, Upload, Coin } from '@element-plus/icons-vue'
+import { VideoCamera, Setting, List, Upload, Coin, PieChart, TrendCharts } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
 import { ElMessage } from 'element-plus'
-import DetectionWorker from '../workers/detection.worker.ts?worker'
+import * as echarts from 'echarts'
+import axios from 'axios'
+import trafficDataMock from '../mock/trafficData.json'
+
+const API_BASE = 'http://127.0.0.1:8000'
+const WS_BASE = 'ws://127.0.0.1:8000'
+
+const videoListDialogVisible = ref(false)
+const videoList = ref<any[]>([])
+const selectedVideoId = ref('')
+let wsInstance: WebSocket | null = null
+
+const categories = ['汽车', '三轮车', '面包车', '公交车', '行人', '骑自行车的人', '骑电动车的人']
+const colorMap: Record<string, string> = {
+  '汽车': '#00d2ff',
+  '三轮车': '#ff9900',
+  '面包车': '#e6a23c',
+  '公交车': '#b39ddb',
+  '行人': '#ff3333',
+  '骑自行车的人': '#00ff00',
+  '骑电动车的人': '#ffff00'
+}
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -31,53 +52,211 @@ const handleDbConnect = () => {
   ElMessage.success(`正在连接到 ${dbForm.value.type} 数据库...`)
 }
 
-const tableData = ref([
-  {
-    id: 1,
-    plate: '京A·88888',
-    type: '汽车',
-    length: '4.5m',
-    width: '1.8m',
-    height: '1.5m',
-    speed: '60km/h',
-    time: '2026-3-17 10:00:00',
-    confidence: '0.98'
-  },
-  {
-    id: 2,
-    plate: '粤B·66666',
-    type: '三轮车',
-    length: '0.6m',
-    width: '0.5m',
-    height: '1.7m',
-    speed: '5km/h',
-    time: '2026-3-17 10:00:05',
-    confidence: '0.89'
-  },
-  {
-    id: 3,
-    plate: '-',
-    type: '骑行者',
-    length: '1.8m',
-    width: '0.6m',
-    height: '1.6m',
-    speed: '15km/h',
-    time: '2026-3-17 10:00:10',
-    confidence: '0.92'
-  }
-])
+const tableData = ref<any[]>([])
+const isTablePaused = ref(false)
 
-const handleVideoChange = (uploadFile: UploadFile) => {
-  if (uploadFile && uploadFile.raw && videoRef.value) {
-    const url = URL.createObjectURL(uploadFile.raw)
-    videoRef.value.src = url
-    // 重置状态
-    isDetecting = false
-    isWorkerBusy = false
-    modelStatus.value = '未加载'
-    if (canvasRef.value) {
-      const ctx = canvasRef.value.getContext('2d')
-      ctx?.clearRect(0, 0, canvasRef.value.width, canvasRef.value.height)
+const configDrawerVisible = ref(false)
+
+// 看板
+const totalTracked = ref(12045) 
+const currentActive = ref(0)
+
+const handleExpandChange = (row: any, expandedRows: any[]) => {
+  isTablePaused.value = expandedRows.length > 0
+}
+
+// 图表
+const pieChartRef = ref<HTMLDivElement | null>(null)
+const lineChartRef = ref<HTMLDivElement | null>(null)
+let pieChartInstance: echarts.ECharts | null = null
+let lineChartInstance: echarts.ECharts | null = null
+
+const initCharts = () => {
+  if (pieChartRef.value) {
+    pieChartInstance = echarts.init(pieChartRef.value, 'dark')
+    pieChartInstance.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'item' },
+      series: [
+        {
+          name: '目标类型',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          avoidLabelOverlap: true,
+          itemStyle: {
+            borderRadius: 5,
+            borderColor: 'rgba(0,0,0,0.5)',
+            borderWidth: 2
+          },
+          label: { 
+            show: true, 
+            formatter: '{b}: {c}',
+            color: '#e0e0e0',
+            fontSize: 12
+          },
+          labelLine: { 
+            show: true,
+            length: 10,
+            length2: 10
+          },
+          data: categories.map(name => ({
+            value: 0,
+            name,
+            itemStyle: { color: colorMap[name] }
+          }))
+        }
+      ]
+    })
+  }
+
+  if (lineChartRef.value) {
+    const initialTimeData = Array(30).fill('')
+    const initialValueData = Array(30).fill(0)
+    
+    lineChartInstance = echarts.init(lineChartRef.value, 'dark')
+    lineChartInstance.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis' },
+      grid: { top: 30, right: 20, bottom: 30, left: 40 },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: initialTimeData,
+        axisLine: { lineStyle: { color: 'rgba(0, 210, 255, 0.5)' } }
+      },
+      yAxis: {
+        type: 'value',
+        splitLine: { lineStyle: { color: 'rgba(0, 210, 255, 0.1)' } },
+        axisLine: { lineStyle: { color: 'rgba(0, 210, 255, 0.5)' } }
+      },
+      series: [
+        {
+          name: '流量',
+          type: 'line',
+          smooth: true,
+          lineStyle: { width: 3, color: '#00d2ff' },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(0, 210, 255, 0.5)' },
+              { offset: 1, color: 'rgba(0, 210, 255, 0.0)' }
+            ])
+          },
+          data: initialValueData
+        }
+      ]
+    })
+  }
+}
+
+const updateChartsWithBoxes = (boxes: any[]) => {
+  const counts: Record<string, number> = {}
+  categories.forEach(c => counts[c] = 0)
+  boxes.forEach(box => {
+    if (counts[box.type] !== undefined) {
+      counts[box.type]++
+    }
+  })
+
+  // 更新看板数据
+  currentActive.value = boxes.length
+  totalTracked.value += boxes.length
+
+  if (pieChartInstance) {
+    const pieData = categories.map(name => ({
+      value: counts[name],
+      name,
+      itemStyle: { color: colorMap[name] }
+    }))
+    pieChartInstance.setOption({ series: [{ data: pieData }] })
+  }
+
+  if (lineChartInstance) {
+    const currentOption = lineChartInstance.getOption() as any
+    if (currentOption && currentOption.series) {
+      const data = currentOption.series[0].data
+      const xAxisData = currentOption.xAxis[0].data
+      
+      data.shift()
+      data.push(boxes.length)
+      
+      xAxisData.shift()
+      const now = new Date()
+      xAxisData.push(`${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`)
+      
+      lineChartInstance.setOption({
+        xAxis: { data: xAxisData },
+        series: [{ data }]
+      })
+    }
+  }
+}
+
+const handleResize = () => {
+  if (pieChartInstance) pieChartInstance.resize()
+  if (lineChartInstance) lineChartInstance.resize()
+}
+
+let mockTimer: number | null = null
+let mockIndex = 0
+
+const startMockData = () => {
+  mockTimer = window.setInterval(() => {
+    const data = trafficDataMock[mockIndex % trafficDataMock.length]
+    const now = new Date()
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
+    
+    if (!isTablePaused.value) {
+      const newData = { ...data, time: timeStr, id: tableData.value.length + 1 }
+      tableData.value.unshift(newData)
+      
+      if (tableData.value.length > 100) {
+        tableData.value.pop()
+      }
+    }
+    
+    mockIndex++
+  }, 1500)
+}
+
+const getSecurityTagType = (level: number) => {
+  switch (level) {
+    case 1: return 'success'
+    case 2: return 'info'
+    case 3: return 'warning'
+    case 4: return 'warning'
+    case 5: return 'danger'
+    default: return 'info'
+  }
+}
+
+const getTypeTagType = (type: string) => {
+  if (['汽车', '面包车', '公交车'].includes(type)) {
+    return '' // 默认青蓝色
+  } else if (['三轮车', '骑自行车的人', '骑电动车的人'].includes(type)) {
+    return 'warning'
+  } else if (type === '行人') {
+    return 'success'
+  }
+  return 'info'
+}
+
+const handleVideoChange = async (uploadFile: UploadFile) => {
+  if (uploadFile && uploadFile.raw) {
+    const formData = new FormData()
+    formData.append('file', uploadFile.raw)
+    
+    try {
+      const res = await axios.post(`${API_BASE}/api/upload/video`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      })
+      if (res.data) {
+        ElMessage.success('上传至本地服务器成功')
+      }
+    } catch (error) {
+      console.error('上传失败:', error)
+      ElMessage.error('上传至本地服务器失败，请检查后端服务是否启动')
     }
   }
 }
@@ -97,7 +276,7 @@ const initOffscreenCanvas = () => {
 }
 
 
-// 在顶层Canvas上绘制检测框
+// 顶层Canvas上绘制检测框，纯前端展示时用
 const drawBoundingBoxes = (boxes: any[], originalWidth: number, originalHeight: number) => {
   if (!canvasRef.value || !videoRef.value) return
   const ctx = canvasRef.value.getContext('2d')
@@ -136,7 +315,7 @@ const drawBoundingBoxes = (boxes: any[], originalWidth: number, originalHeight: 
     ctx.drawImage(offscreenCanvas, offsetX, offsetY, renderWidth, renderHeight)
   }
 
-  // 4. 计算缩放比例 (原始尺寸 -> 实际渲染尺寸)
+    // 4. 计算缩放比例 (原始尺寸 -> 实际渲染尺寸)
   const scaleX = renderWidth / originalWidth
   const scaleY = renderHeight / originalHeight
 
@@ -149,16 +328,7 @@ const drawBoundingBoxes = (boxes: any[], originalWidth: number, originalHeight: 
     const h = box.height * scaleY
 
     // 根据类型获取颜色
-    let color = '#00ffff' 
-    switch (box.type) {
-      case '汽车': color = '#00ffff'; break;       
-      case '面包车': color = '#ff9900'; break;     
-      case '公交车': color = '#ff00ff'; break;    
-      case '三轮车': color = '#00ff00'; break;     
-      case '骑电动车的人': color = '#ffff00'; break; 
-      case '骑自行车的人': color = '#0099ff'; break; 
-      case '行人': color = '#ff3333'; break;      
-    }
+    let color = colorMap[box.type] || '#00d2ff' 
 
     ctx.beginPath()
     ctx.lineWidth = 1.5 
@@ -197,60 +367,135 @@ const onVideoSeeked = () => {
   }
 }
 
-const startDetection = () => {
-  if (!videoRef.value || !videoRef.value.src) {
-    ElMessage.warning('请先选择本地视频文件！')
-    return
-  }
-
-  if (modelStatus.value === '加载中' || modelStatus.value === '已就绪') return
-  modelStatus.value = '加载中'
-  
-  if (!worker) {
-    worker = new DetectionWorker()
-    worker.onmessage = (e) => {
-      const { type, payload, error } = e.data
-      if (type === 'init_done') {
-        modelStatus.value = '已就绪'
-        console.log("Worker init done, starting detection loop");
-        if (videoRef.value) {
-          initOffscreenCanvas()
-          isDetecting = true
-          videoRef.value.currentTime = 0.001 // 触发第一次 seeked
-        }
-      } else if (type === 'detect_done') {
-        isWorkerBusy = false
-        if (videoRef.value) {
-           drawBoundingBoxes(payload, videoRef.value.videoWidth, videoRef.value.videoHeight)
-           
-           // 步进下一帧
-           if (videoRef.value.currentTime < videoRef.value.duration) {
-             videoRef.value.currentTime += frameInterval
-           } else {
-             isDetecting = false
-             ElMessage.success('视频处理完成')
-           }
-        }
-      } else if (type === 'error') {
-        ElMessage.error(`模型异常: ${error}`)
-        modelStatus.value = '未加载'
-        isWorkerBusy = false
-        isDetecting = false
-      }
+const openVideoSelector = async () => {
+  try {
+    const res = await axios.get(`${API_BASE}/api/list/video`)
+    if (res.data) {
+      videoList.value = res.data
+      videoListDialogVisible.value = true
     }
-    worker.postMessage({ type: 'init' })
-  } else {
-    // Worker已经初始化过了
-    modelStatus.value = '已就绪'
-    if (videoRef.value) {
-      initOffscreenCanvas()
-      isDetecting = true
-      videoRef.value.currentTime = 0.001
-    }
+  } catch (error) {
+    console.error('获取视频列表失败:', error)
+    ElMessage.error('获取视频列表失败')
   }
 }
 
-// 确保canvas尺寸与video容器实际显示尺寸一致
+const startBackendInference = () => {
+  if (!selectedVideoId.value) {
+    ElMessage.warning('请先选择一个视频')
+    return
+  }
+
+  videoListDialogVisible.value = false
+  modelStatus.value = '加载中'
+
+  if (wsInstance) {
+    wsInstance.close()
+  }
+
+  wsInstance = new WebSocket(`${WS_BASE}/ws/strame/${selectedVideoId.value}`)
+
+  wsInstance.onopen = () => {
+    modelStatus.value = '已就绪'
+    isDetecting = true
+    ElMessage.success('已连接到推理服务器')
+  }
+
+  wsInstance.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      
+      if (data.image && canvasRef.value) {
+        const ctx = canvasRef.value.getContext('2d')
+        if (!ctx) return
+
+        const img = new Image()
+        img.onload = () => {
+          // 绘制底图
+          const canvasWidth = canvasRef.value!.width
+          const canvasHeight = canvasRef.value!.height
+          ctx.clearRect(0, 0, canvasWidth, canvasHeight)
+          
+          const originalWidth = img.width
+          const originalHeight = img.height
+          const containerRatio = canvasWidth / canvasHeight
+          const videoRatio = originalWidth / originalHeight
+
+          let renderWidth = canvasWidth
+          let renderHeight = canvasHeight
+          let offsetX = 0
+          let offsetY = 0
+
+          if (containerRatio > videoRatio) {
+            renderHeight = canvasHeight
+            renderWidth = renderHeight * videoRatio
+            offsetX = (canvasWidth - renderWidth) / 2
+          } else {
+            renderWidth = canvasWidth
+            renderHeight = renderWidth / videoRatio
+            offsetY = (canvasHeight - renderHeight) / 2
+          }
+
+          ctx.drawImage(img, offsetX, offsetY, renderWidth, renderHeight)
+
+          // 绘制检测框
+          if (data.boxes && Array.isArray(data.boxes)) {
+            const scaleX = renderWidth / originalWidth
+            const scaleY = renderHeight / originalHeight
+
+            data.boxes.forEach((box: any) => {
+              const x = box.x * scaleX + offsetX
+              const y = box.y * scaleY + offsetY
+              const w = box.width * scaleX
+              const h = box.height * scaleY
+
+              const color = colorMap[box.type] || '#00d2ff'
+
+              ctx.beginPath()
+              ctx.lineWidth = 1.5
+              ctx.strokeStyle = color
+              ctx.rect(x, y, w, h)
+              ctx.stroke()
+
+              const label = `${box.type}`
+              ctx.font = '10px Arial'
+              const textWidth = ctx.measureText(label).width
+              
+              ctx.fillStyle = color
+              ctx.globalAlpha = 0.85
+              ctx.fillRect(x, y - 16, textWidth + 8, 16)
+              ctx.globalAlpha = 1.0
+              
+              ctx.fillStyle = '#000000'
+              ctx.fillText(label, x + 4, y - 4)
+            })
+
+            // 更新图表和看板
+            updateChartsWithBoxes(data.boxes)
+          }
+        }
+        img.src = `data:image/jpeg;base64,${data.image}`
+      }
+    } catch (error) {
+      console.error('解析WebSocket数据失败:', error)
+    }
+  }
+
+  wsInstance.onerror = (error) => {
+    console.error('WebSocket错误:', error)
+    ElMessage.error('推理连接发生错误')
+    modelStatus.value = '未加载'
+    isDetecting = false
+  }
+
+  wsInstance.onclose = () => {
+    console.log('WebSocket连接已关闭')
+    modelStatus.value = '未加载'
+    isDetecting = false
+  }
+}
+
+// canvas与video尺寸一致
 const resizeCanvas = () => {
   if (videoContainerRef.value && canvasRef.value) {
     canvasRef.value.width = videoContainerRef.value.clientWidth
@@ -282,10 +527,14 @@ onMounted(() => {
   }
   if (videoRef.value) {
     videoRef.value.addEventListener('loadedmetadata', resizeCanvas)
-    videoRef.value.addEventListener('loadedmetadata', initOffscreenCanvas) // 视频加载后初始化离屏Canvas
+    videoRef.value.addEventListener('loadedmetadata', initOffscreenCanvas) // 视频加载后初始化Canvas
   }
   updateTime()
   timeTimer = window.setInterval(updateTime, 1000)
+  startMockData()
+  
+  initCharts()
+  window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
@@ -299,6 +548,14 @@ onUnmounted(() => {
   if (timeTimer) {
     clearInterval(timeTimer)
   }
+  if (mockTimer) {
+    clearInterval(mockTimer)
+  }
+  
+  window.removeEventListener('resize', handleResize)
+  if (pieChartInstance) pieChartInstance.dispose()
+  if (lineChartInstance) lineChartInstance.dispose()
+  if (wsInstance) wsInstance.close()
 })
 </script>
 
@@ -319,123 +576,101 @@ onUnmounted(() => {
 
       <el-main class="main-content">
         <div class="top-section">
-          <!-- 左侧：视频区域 -->
-          <el-card class="tech-panel video-panel" shadow="never">
-            <template #header>
-              <div class="panel-header">
-                <span class="panel-title">
-                  <el-icon><VideoCamera /></el-icon> 实时监控画面
-                </span>
-                <div class="panel-actions">
-                  <el-upload
-                    action=""
-                    :auto-upload="false"
-                    :show-file-list="false"
-                    accept="video/*"
-                    @change="handleVideoChange"
-                  >
-                    <template #trigger>
-                      <el-button type="primary" plain class="tech-btn" :icon="Upload">选择本地视频</el-button>
-                    </template>
-                  </el-upload>
+          <!-- 左侧：图表区 -->
+          <div class="left-column">
+            <el-card class="tech-panel chart-panel" shadow="never">
+              <template #header>
+                <div class="panel-header">
+                  <span class="panel-title">
+                    <el-icon><PieChart /></el-icon> 目标类型占比
+                  </span>
+                </div>
+              </template>
+              <div class="chart-container" ref="pieChartRef"></div>
+            </el-card>
+
+            <el-card class="tech-panel chart-panel" shadow="never">
+              <template #header>
+                <div class="panel-header">
+                  <span class="panel-title">
+                    <el-icon><TrendCharts /></el-icon> 实时交通流量趋势
+                  </span>
+                </div>
+              </template>
+              <div class="chart-container" ref="lineChartRef"></div>
+            </el-card>
+          </div>
+
+          <!-- 中间：视频区域 -->
+          <div class="center-column">
+            <el-card class="tech-panel video-panel" shadow="never">
+              <template #header>
+                <div class="panel-header">
+                  <span class="panel-title">
+                    <el-icon><VideoCamera /></el-icon> 实时监控画面
+                  </span>
+                  <div class="panel-actions">
+                    <el-upload
+                      action=""
+                      :auto-upload="false"
+                      :show-file-list="false"
+                      accept="video/*"
+                      @change="handleVideoChange"
+                    >
+                      <template #trigger>
+                        <el-button type="primary" plain class="tech-btn" :icon="Upload">选择本地视频</el-button>
+                      </template>
+                    </el-upload>
                   <el-button 
                     type="primary" 
                     class="tech-btn primary-btn" 
-                    @click="startDetection" 
+                    @click="openVideoSelector" 
                     :disabled="modelStatus === '加载中'"
                   >
                     开始识别
                   </el-button>
+                  </div>
+                </div>
+              </template>
+              <div class="video-container" ref="videoContainerRef">
+                <video ref="videoRef" muted class="tech-video" @seeked="onVideoSeeked"></video>
+                <canvas ref="canvasRef" class="tech-canvas"></canvas>
+                <div class="scan-line"></div>
+              </div>
+            </el-card>
+          </div>
+
+          <!-- 右侧：控制区 -->
+          <div class="right-column">
+            <el-card class="tech-panel metric-panel" shadow="never">
+              <template #header>
+                <div class="panel-header">
+                  <span class="panel-title">
+                    <el-icon><List /></el-icon> 累计追踪看板
+                  </span>
+                </div>
+              </template>
+              <div class="metric-container">
+                <div class="metric-card">
+                  <div class="metric-title">今日累计检测目标</div>
+                  <div class="metric-value total">{{ totalTracked.toLocaleString() }}</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-title">当前活跃追踪数</div>
+                  <div class="metric-value active">{{ currentActive }}</div>
                 </div>
               </div>
-            </template>
-            <div class="video-container" ref="videoContainerRef">
-              <video ref="videoRef" muted class="tech-video" @seeked="onVideoSeeked"></video>
-              <canvas ref="canvasRef" class="tech-canvas"></canvas>
-              <div class="scan-line"></div>
-            </div>
-          </el-card>
+            </el-card>
 
-          <!-- 右侧：模型配置区域 -->
-          <el-card class="tech-panel config-panel" shadow="never">
-            <template #header>
-              <div class="panel-header">
-                <span class="panel-title">
-                  <el-icon><Setting /></el-icon> 模型配置区
-                </span>
-              </div>
-            </template>
-            <el-form label-position="top" class="config-form">
-              <el-form-item label="交通要素识别模型">
-                <el-input readonly value="RS-DETR" class="tech-input" />
-              </el-form-item>
-              <el-form-item label="车牌识别模型">
-                <el-input readonly value="PaddleOCR" class="tech-input" />
-              </el-form-item>
-              <el-form-item label="模型加载状态" class="status-item">
-                <div :class="['status-indicator', modelStatus === '已就绪' ? 'ready' : modelStatus === '加载中' ? 'loading' : 'offline']">
-                  <span class="dot"></span>
-                  <span class="text">{{ modelStatus }}</span>
-                </div>
-              </el-form-item>
-            </el-form>
-          </el-card>
-
-          <!-- 最右侧：数据库连接区域 -->
-          <el-card class="tech-panel db-panel" shadow="never">
-            <template #header>
-              <div class="panel-header">
-                <span class="panel-title">
-                  <el-icon><Coin /></el-icon> 关系型数据库连接
-                </span>
-              </div>
-            </template>
-            <el-form label-position="top" class="config-form compact-form" :model="dbForm">
-              <el-form-item label="数据库类型">
-                <el-select v-model="dbForm.type" class="tech-input" style="width: 100%" popper-class="tech-select-popper">
-                  <el-option label="MySQL" value="MySQL" />
-                  <el-option label="SQL Server" value="SQL Server" />
-                  <el-option label="PostgreSQL" value="PostgreSQL" />
-                </el-select>
-              </el-form-item>
-              
-              <el-row :gutter="15">
-                <el-col :span="16">
-                  <el-form-item label="主机地址">
-                    <el-input v-model="dbForm.host" class="tech-input" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="8">
-                  <el-form-item label="端口">
-                    <el-input v-model="dbForm.port" class="tech-input" />
-                  </el-form-item>
-                </el-col>
-              </el-row>
-
-              <el-form-item label="数据库名">
-                <el-input v-model="dbForm.database" class="tech-input" />
-              </el-form-item>
-
-              <el-row :gutter="15">
-                <el-col :span="12">
-                  <el-form-item label="用户名">
-                    <el-input v-model="dbForm.username" class="tech-input" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="12">
-                  <el-form-item label="密码">
-                    <el-input v-model="dbForm.password" type="password" show-password class="tech-input" />
-                  </el-form-item>
-                </el-col>
-              </el-row>
-
-              <div style="margin-top: 10px;">
-                <el-button type="primary" class="tech-btn primary-btn" style="width: 100%" @click="handleDbConnect">
-                  连接数据库
-                </el-button>
-              </div>
-            </el-form>
-          </el-card>
+            <el-button 
+              type="primary" 
+              class="tech-btn primary-btn config-trigger-btn" 
+              :icon="Setting" 
+              @click="configDrawerVisible = true"
+            >
+              系统配置与数据库连接
+            </el-button>
+          </div>
         </div>
 
         <div class="bottom-section">
@@ -446,25 +681,191 @@ onUnmounted(() => {
                 <span class="panel-title">
                   <el-icon><List /></el-icon> 实时识别结果
                 </span>
+                <div class="panel-actions">
+                  <el-tag v-if="isTablePaused" type="warning" effect="dark" class="blink-anim table-status-tag">
+                    自动锁定中
+                  </el-tag>
+                  <el-tag v-else type="success" effect="dark" class="table-status-tag">
+                    实时刷新中
+                  </el-tag>
+                </div>
               </div>
             </template>
             <div class="table-container">
-              <el-table :data="tableData" class="tech-table" height="100%">
-                <el-table-column prop="id" label="序号" width="80" align="center" />
-                <el-table-column prop="plate" label="车牌号码" align="center" />
-                <el-table-column prop="type" label="目标类型" align="center" />
-                <el-table-column prop="length" label="目标长度" align="center" />
-                <el-table-column prop="width" label="目标宽度" align="center" />
-                <el-table-column prop="height" label="目标高度" align="center" />
-                <el-table-column prop="speed" label="行驶速度" align="center" />
-                <el-table-column prop="time" label="识别时间" align="center" width="200" />
-                <el-table-column prop="confidence" label="置信度" align="center" />
+              <el-table 
+                :data="tableData" 
+                class="tech-table" 
+                height="100%" 
+                preserve-expanded-content
+                @expand-change="handleExpandChange"
+              >
+                <el-table-column type="expand">
+                  <template #default="props">
+                    <div class="expand-wrapper">
+                      <el-descriptions class="tech-descriptions" :column="4" border direction="vertical">
+                        <el-descriptions-item label="纵向速度">{{ props.row.lonSpeed }}</el-descriptions-item>
+                        <el-descriptions-item label="横向速度">{{ props.row.latSpeed }}</el-descriptions-item>
+                        <el-descriptions-item label="速度方向">{{ props.row.speedDir }}</el-descriptions-item>
+                        <el-descriptions-item label="运动方向">{{ props.row.motionDir }}</el-descriptions-item>
+                        
+                        <el-descriptions-item label="经度">{{ props.row.longitude }}</el-descriptions-item>
+                        <el-descriptions-item label="纬度">{{ props.row.latitude }}</el-descriptions-item>
+                        <el-descriptions-item label="海拔">{{ props.row.altitude }}</el-descriptions-item>
+                        <el-descriptions-item label="车道信息">{{ props.row.laneInfo || '--' }}</el-descriptions-item>
+                        
+                        <el-descriptions-item label="纵向加速度">{{ props.row.lonAcc }}</el-descriptions-item>
+                        <el-descriptions-item label="横向加速度">{{ props.row.latAcc }}</el-descriptions-item>
+                        <el-descriptions-item label="加速度方向" :span="2">{{ props.row.accDir }}</el-descriptions-item>
+                      </el-descriptions>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="id" label="序号" align="center" />
+                <el-table-column prop="time" label="时间" align="center" />
+                <el-table-column prop="type" label="目标类型" align="center">
+                  <template #default="scope">
+                    <el-tag effect="dark" :type="getTypeTagType(scope.row.type)" class="type-tag">
+                      {{ scope.row.type }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="plate" label="车牌号" align="center">
+                  <template #default="scope">
+                    <span v-if="scope.row.plate" class="plate-text">{{ scope.row.plate }}</span>
+                    <span v-else class="empty-text">--</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="securityLevel" label="安全等级" align="center">
+                  <template #default="scope">
+                    <el-tag 
+                      effect="dark" 
+                      :class="['security-tag', `level-${scope.row.securityLevel}`]"
+                      :type="getSecurityTagType(scope.row.securityLevel)"
+                    >
+                      {{ scope.row.securityLevel }} 级
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="尺寸(长×宽×高)" align="center">
+                  <template #default="scope">
+                    <span class="size-text">{{ scope.row.length }} × {{ scope.row.width }} × {{ scope.row.height }}</span>
+                  </template>
+                </el-table-column>
               </el-table>
             </div>
           </el-card>
         </div>
       </el-main>
     </el-container>
+
+    <!-- 隐藏的配置抽屉 -->
+    <el-drawer
+      v-model="configDrawerVisible"
+      title="系统配置与数据库连接"
+      direction="rtl"
+      size="400px"
+      class="tech-drawer"
+      :with-header="true"
+    >
+      <div class="drawer-content">
+        <div class="drawer-section">
+          <h3 class="section-title"><el-icon><Setting /></el-icon> 模型配置区</h3>
+          <el-form label-position="top" class="config-form">
+            <el-form-item label="交通要素识别模型">
+              <el-input readonly value="RS-DETR" class="tech-input" />
+            </el-form-item>
+            <el-form-item label="模型加载状态" class="status-item">
+              <div :class="['status-indicator', modelStatus === '已就绪' ? 'ready' : modelStatus === '加载中' ? 'loading' : 'offline']">
+                <span class="dot"></span>
+                <span class="text">{{ modelStatus }}</span>
+              </div>
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <div class="drawer-section">
+          <h3 class="section-title"><el-icon><Coin /></el-icon> 关系型数据库连接</h3>
+          <el-form label-position="top" class="config-form compact-form" :model="dbForm">
+            <el-form-item label="数据库类型">
+              <el-select v-model="dbForm.type" class="tech-input" style="width: 100%" popper-class="tech-select-popper">
+                <el-option label="MySQL" value="MySQL" />
+                <el-option label="SQL Server" value="SQL Server" />
+                <el-option label="PostgreSQL" value="PostgreSQL" />
+              </el-select>
+            </el-form-item>
+            
+            <el-row :gutter="15">
+              <el-col :span="16">
+                <el-form-item label="主机地址">
+                  <el-input v-model="dbForm.host" class="tech-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="8">
+                <el-form-item label="端口">
+                  <el-input v-model="dbForm.port" class="tech-input" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-form-item label="数据库名">
+              <el-input v-model="dbForm.database" class="tech-input" />
+            </el-form-item>
+
+            <el-row :gutter="15">
+              <el-col :span="12">
+                <el-form-item label="用户名">
+                  <el-input v-model="dbForm.username" class="tech-input" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="密码">
+                  <el-input v-model="dbForm.password" type="password" show-password class="tech-input" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <div style="margin-top: 20px;">
+              <el-button type="primary" class="tech-btn primary-btn" style="width: 100%" @click="handleDbConnect">
+                连接数据库
+              </el-button>
+            </div>
+          </el-form>
+        </div>
+      </div>
+    </el-drawer>
+
+    <!-- 视频选择弹窗 -->
+    <el-dialog 
+      v-model="videoListDialogVisible" 
+      title="选择要进行推理的视频" 
+      width="400px"
+      class="tech-dialog"
+    >
+      <div class="dialog-content">
+        <el-select 
+          v-model="selectedVideoId" 
+          placeholder="请选择视频" 
+          class="tech-input" 
+          style="width: 100%"
+          popper-class="tech-select-popper"
+        >
+          <el-option
+            v-for="item in videoList"
+            :key="item.id || item"
+            :label="item.name || item"
+            :value="item.id || item"
+          />
+        </el-select>
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button class="tech-btn" @click="videoListDialogVisible = false">取消</el-button>
+          <el-button type="primary" class="tech-btn primary-btn" @click="startBackendInference">
+            开始连接并推理
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -477,6 +878,8 @@ onUnmounted(() => {
   background-color: #02050a;
   overflow: hidden;
   color: #e0e0e0;
+  display: flex;
+  flex-direction: column;
 }
 
 .starry-bg {
@@ -502,16 +905,17 @@ onUnmounted(() => {
   position: relative;
   z-index: 1;
   height: 100%;
-  padding: 20px;
+  padding: 15px 20px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* 标题样式 */
 .header {
   text-align: center;
-  padding-bottom: 18px;
+  padding-bottom: 10px;
   position: relative;
 }
 
@@ -525,7 +929,7 @@ onUnmounted(() => {
 
 .title {
   margin: 0;
-  font-size: 32px;
+  font-size: 24px;
   font-weight: 800;
   letter-spacing: 4px;
   background: linear-gradient(180deg, #00ffff 0%, #4d7fff 100%);
@@ -543,7 +947,7 @@ onUnmounted(() => {
   right: 22px;
   bottom: 5px;
   color: #00ffff;
-  font-size: 18px;
+  font-size: 16px;
   font-family: 'Courier New', Courier, monospace;
   font-weight: bold;
   text-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
@@ -558,7 +962,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin-top: 15px;
+  margin-top: 8px;
 }
 
 .title-decoration .line {
@@ -581,22 +985,65 @@ onUnmounted(() => {
 .main-content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 15px;
   padding: 0 !important;
   overflow: hidden;
+  flex: 1;
 }
 
 .top-section {
   display: flex;
   gap: 20px;
-  height: 68%;
-  min-height: 450px;
+  height: 55vh;
+  min-height: 400px;
+}
+
+.left-column, .center-column, .right-column {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.left-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.center-column {
+  flex: 2.2;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.metric-panel {
+  flex: 1;
+}
+
+.chart-panel {
+  flex: 1;
+}
+
+.chart-container {
+  width: 100%;
+  height: 100%;
+  min-height: 150px;
+  padding: 10px;
+  box-sizing: border-box;
 }
 
 .bottom-section {
   flex: 1;
   min-height: 0;
   display: flex;
+  overflow: hidden;
 }
 
 /* el-card 面板玻璃质感深度覆盖 */
@@ -646,25 +1093,18 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .video-panel {
-  flex: 2.2;
-}
-
-.config-panel {
   flex: 1;
-  min-width: 250px;
-}
-
-.db-panel {
-  flex: 1.2;
-  min-width: 300px;
 }
 
 .table-panel {
   flex: 1;
   width: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-header {
@@ -776,11 +1216,15 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 15px;
+  overflow-y: auto;
+  flex: 1;
 }
 
 .compact-form {
   padding: 15px 20px;
   gap: 10px;
+  overflow-y: auto;
+  flex: 1;
 }
 
 .compact-form :deep(.el-form-item) {
@@ -841,7 +1285,7 @@ onUnmounted(() => {
 .status-indicator {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 10px 15px;
   background: rgba(0, 30, 60, 0.5);
   border: 1px solid rgba(0, 210, 255, 0.3);
@@ -893,6 +1337,153 @@ onUnmounted(() => {
   100% { box-shadow: 0 0 0 0 rgba(103, 194, 58, 0); }
 }
 
+/* 累计追踪通量看板样式 */
+.metric-container {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  padding: 15px;
+  height: 100%;
+  box-sizing: border-box;
+  justify-content: center;
+}
+
+.metric-card {
+  background: linear-gradient(90deg, rgba(0, 30, 60, 0.6) 0%, rgba(0, 15, 30, 0.4) 100%);
+  border: 1px solid rgba(0, 210, 255, 0.3);
+  border-left: 4px solid #00d2ff;
+  border-radius: 4px;
+  padding: 20px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: inset 0 0 15px rgba(0, 210, 255, 0.1);
+}
+
+.metric-card:nth-child(2) {
+  border-left-color: #67c23a;
+}
+
+.metric-title {
+  color: #a3d9ff;
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.metric-value {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 36px;
+  font-weight: bold;
+}
+
+.metric-value.total {
+  color: #00ffff;
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+}
+
+.metric-value.active {
+  color: #67c23a;
+  text-shadow: 0 0 10px rgba(103, 194, 58, 0.8);
+}
+
+.config-trigger-btn {
+  width: 100%;
+  height: 60px;
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  border-radius: 8px;
+}
+
+/* 抽屉样式深度定制 */
+:deep(.tech-drawer) {
+  background: rgba(0, 15, 30, 0.95) !important;
+  backdrop-filter: blur(10px);
+  border-left: 1px solid rgba(0, 210, 255, 0.3);
+  box-shadow: -10px 0 30px rgba(0, 210, 255, 0.1);
+}
+
+:deep(.tech-drawer .el-drawer__header) {
+  margin-bottom: 0;
+  padding: 20px;
+  border-bottom: 1px solid rgba(0, 210, 255, 0.3);
+  color: #00ffff;
+  font-size: 20px;
+  font-weight: bold;
+  text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+:deep(.tech-drawer .el-drawer__body) {
+  padding: 0;
+  overflow-y: auto;
+}
+
+.drawer-content {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.drawer-section {
+  background: rgba(0, 30, 60, 0.3);
+  border: 1px solid rgba(0, 210, 255, 0.2);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.section-title {
+  color: #00a8ff;
+  margin: 0 0 20px 0;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-shadow: 0 0 5px rgba(0, 168, 255, 0.5);
+}
+
+.drawer-section .config-form {
+  padding: 0;
+}
+
+/* 对话框样式深度定制 */
+:deep(.tech-dialog) {
+  background: rgba(0, 15, 30, 0.95) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 210, 255, 0.3);
+  box-shadow: 0 0 30px rgba(0, 210, 255, 0.15);
+  border-radius: 8px;
+}
+
+:deep(.tech-dialog .el-dialog__header) {
+  margin-right: 0;
+  padding: 20px;
+  border-bottom: 1px solid rgba(0, 210, 255, 0.3);
+}
+
+:deep(.tech-dialog .el-dialog__title) {
+  color: #00ffff;
+  font-size: 18px;
+  font-weight: bold;
+  text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+:deep(.tech-dialog .el-dialog__body) {
+  padding: 30px 20px;
+}
+
+:deep(.tech-dialog .el-dialog__footer) {
+  padding: 15px 20px;
+  border-top: 1px solid rgba(0, 210, 255, 0.1);
+}
+
+.dialog-content {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
 /* 表格 */
 .table-container {
   flex: 1;
@@ -900,6 +1491,8 @@ onUnmounted(() => {
   overflow: hidden;
   height: 100%;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 
 :deep(.tech-table) {
@@ -937,8 +1530,129 @@ onUnmounted(() => {
 }
 
 :deep(.tech-table tbody tr:hover > td.el-table__cell) {
-  background-color: rgba(0, 210, 255, 0.2) !important;
-  box-shadow: inset 0 0 10px rgba(0, 210, 255, 0.1);
+  background-color: rgba(0, 210, 255, 0.15) !important;
+  box-shadow: inset 0 0 15px rgba(0, 210, 255, 0.2);
   text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
+}
+
+/* 车牌号样式 */
+.plate-text {
+  font-weight: bold;
+  color: #00d2ff;
+  text-shadow: 0 0 8px rgba(0, 210, 255, 0.8);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 15px;
+}
+
+.empty-text {
+  color: #666;
+  font-weight: bold;
+}
+
+/* 尺寸样式 */
+.size-text {
+  color: #a3d9ff;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+/* 目标类型标签 */
+.type-tag {
+  font-weight: bold;
+  border: none !important;
+  width: 90px;
+  text-align: center;
+}
+
+/* 安全要素等级标签 */
+.security-tag {
+  font-weight: bold;
+  border: none !important;
+  width: 60px;
+  text-align: center;
+}
+.level-1 { background-color: rgba(103, 194, 58, 0.8) !important; box-shadow: 0 0 10px rgba(103, 194, 58, 0.5); }
+.level-2 { background-color: rgba(0, 210, 255, 0.6) !important; box-shadow: 0 0 10px rgba(0, 210, 255, 0.5); }
+.level-3 { background-color: rgba(230, 162, 60, 0.8) !important; box-shadow: 0 0 10px rgba(230, 162, 60, 0.5); }
+.level-4 { background-color: rgba(255, 140, 0, 0.8) !important; box-shadow: 0 0 10px rgba(255, 140, 0, 0.6); }
+.level-5 { 
+  background-color: rgba(245, 108, 108, 0.9) !important; 
+  box-shadow: 0 0 15px rgba(245, 108, 108, 0.8), 0 0 5px rgba(245, 108, 108, 0.8) inset; 
+  animation: pulse-danger 1.5s infinite;
+}
+
+@keyframes pulse-danger {
+  0% { box-shadow: 0 0 10px rgba(245, 108, 108, 0.8); }
+  50% { box-shadow: 0 0 20px rgba(245, 108, 108, 1), 0 0 10px rgba(245, 108, 108, 0.8) inset; }
+  100% { box-shadow: 0 0 10px rgba(245, 108, 108, 0.8); }
+}
+
+/* 展开区域样式 */
+:deep(.el-table__expanded-cell) {
+  background-color: rgba(0, 15, 30, 0.6) !important;
+  padding: 20px !important;
+  border-bottom: 1px solid rgba(0, 210, 255, 0.3) !important;
+}
+
+:deep(.el-table__expanded-cell:hover) {
+  background-color: rgba(0, 15, 30, 0.8) !important;
+}
+
+.expand-wrapper {
+  border: 1px solid rgba(0, 210, 255, 0.2);
+  border-radius: 4px;
+  padding: 15px;
+  background: linear-gradient(180deg, rgba(0, 30, 60, 0.4) 0%, rgba(0, 15, 30, 0.6) 100%);
+  box-shadow: inset 0 0 20px rgba(0, 210, 255, 0.1);
+}
+
+/* 展开内容的描述列表组件样式 */
+:deep(.tech-descriptions) {
+  --el-descriptions-table-border: 1px solid rgba(0, 210, 255, 0.2);
+  --el-descriptions-item-bordered-label-background: rgba(0, 50, 100, 0.5);
+}
+
+:deep(.tech-descriptions .el-descriptions__label) {
+  color: #00ffff;
+  font-weight: bold;
+  text-shadow: 0 0 5px rgba(0, 255, 255, 0.3);
+  text-align: center;
+  width: 12%;
+}
+
+:deep(.tech-descriptions .el-descriptions__content) {
+  color: #e0e0e0;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: bold;
+  text-align: center;
+  background-color: rgba(0, 20, 40, 0.4);
+  width: 13%;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.3);
+}
+
+/* 修复展开图标颜色 */
+:deep(.el-table__expand-icon) {
+  color: #00ffff;
+}
+
+/* 表格状态标签动画 */
+.table-status-tag {
+  font-weight: bold;
+  letter-spacing: 1px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  border: none !important;
+}
+
+.blink-anim {
+  animation: blink 1.5s infinite ease-in-out;
+  background-color: rgba(230, 162, 60, 0.9) !important;
+  box-shadow: 0 0 15px rgba(230, 162, 60, 0.6);
+}
+
+@keyframes blink {
+  0% { opacity: 1; box-shadow: 0 0 15px rgba(230, 162, 60, 0.8); }
+  50% { opacity: 0.6; box-shadow: 0 0 5px rgba(230, 162, 60, 0.3); }
+  100% { opacity: 1; box-shadow: 0 0 15px rgba(230, 162, 60, 0.8); }
 }
 </style>
