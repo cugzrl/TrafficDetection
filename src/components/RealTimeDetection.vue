@@ -18,11 +18,10 @@ let wsInstance: WebSocket | null = null
 let lastLineChartUpdateTime = 0
 
 const pauseDetection = () => {
-  // 基础框架函数
   ElMessage.info('已暂停识别')
 }
 
-const categories = ['汽车', '三轮车', '面包车', '公交车', '骑电动车的人', '骑自行车的人', '行人']
+const categories = ['汽车', '面包车', '公交车', '三轮车', '骑电动车的人', '骑自行车的人', '行人']
 const colorMap: Record<string, string> = {
   '汽车': '#2EABFF',
   '三轮车': '#EF6B6B',
@@ -61,10 +60,9 @@ const isTablePaused = ref(false)
 const configDrawerVisible = ref(false)
 
 // 看板
-const totalTracked = ref(0) 
 const currentActive = ref(0)
-let internalTotal = 0
-let totalTrackedTimer: number | null = null
+let tempActiveCount = 0 // 后台接收的临时变量
+let activeCountTimer: number | null = null // 1秒更新一次
 
 const handleExpandChange = (row: any, expandedRows: any[]) => {
   isTablePaused.value = expandedRows.length > 0
@@ -184,9 +182,8 @@ const updateChartsWithBoxes = (boxes: any[]) => {
     }
   })
 
-  // 更新看板数据
-  currentActive.value = boxes.length
-  internalTotal += boxes.length
+  // 更新看板数据（只更新后台临时变量，不直接渲染）
+  tempActiveCount = boxes.length
 
   if (pieChartInstance) {
     const pieData = categories.map(name => ({
@@ -323,7 +320,7 @@ const startBackendInference = () => {
     wsInstance.close()
   }
 
-  wsInstance = new WebSocket(`${WS_BASE}/ws/strame/${selectedVideoId.value}`)
+  wsInstance = new WebSocket(`${WS_BASE}/ws/frame/${selectedVideoId.value}`)
 
   wsInstance.onopen = () => {
     modelStatus.value = '已就绪'
@@ -466,9 +463,10 @@ onMounted(() => {
   initCharts()
   window.addEventListener('resize', handleResize)
 
-  totalTrackedTimer = window.setInterval(() => {
-    totalTracked.value = internalTotal
-  }, 3000)
+  // 每秒将临时变量的值赋给前台显示
+  activeCountTimer = window.setInterval(() => {
+    currentActive.value = tempActiveCount
+  }, 1000)
 })
 
 onUnmounted(() => {
@@ -485,8 +483,8 @@ onUnmounted(() => {
   if (mockTimer) {
     clearInterval(mockTimer)
   }
-  if (totalTrackedTimer) {
-    clearInterval(totalTrackedTimer)
+  if (activeCountTimer) {
+    clearInterval(activeCountTimer)
   }
   
   window.removeEventListener('resize', handleResize)
@@ -599,17 +597,13 @@ onUnmounted(() => {
               <template #header>
                 <div class="panel-header">
                   <span class="panel-title">
-                    <el-icon><List /></el-icon> 累计追踪看板
+                    <el-icon><List /></el-icon> 实时活跃追踪
                   </span>
                 </div>
               </template>
               <div class="metric-container">
-                <div class="metric-card">
-                  <div class="metric-title">累计检测目标</div>
-                  <div class="metric-value total">{{ totalTracked.toLocaleString() }}</div>
-                </div>
-                <div class="metric-card">
-                  <div class="metric-title">当前活跃追踪数</div>
+                <div class="metric-card hud-card">
+                  <div class="metric-title">实时目标</div>
                   <div class="metric-value active">{{ currentActive }}</div>
                 </div>
               </div>
@@ -1289,54 +1283,53 @@ onUnmounted(() => {
   100% { box-shadow: 0 0 0 0 rgba(103, 194, 58, 0); }
 }
 
-/* 累计追踪通量看板样式 */
+/* 累计追踪通量看板样式 (HUD 大屏化) */
 .metric-container {
   display: flex;
-  flex-direction: column;
-  gap: 20px;
-  padding: 15px;
-  height: 100%;
-  box-sizing: border-box;
-  justify-content: center;
-}
-
-.metric-card {
-  background: linear-gradient(90deg, rgba(0, 30, 60, 0.6) 0%, rgba(0, 15, 30, 0.4) 100%);
-  border: 1px solid rgba(0, 210, 255, 0.3);
-  border-left: 4px solid #00d2ff;
-  border-radius: 4px;
-  padding: 15px 20px;
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  box-shadow: inset 0 0 15px rgba(0, 210, 255, 0.1);
+  justify-content: center;
+  height: 100%;
+  padding: 20px;
+  box-sizing: border-box;
 }
 
-.metric-card:nth-child(2) {
-  border-left-color: #f0f183;
+.metric-card.hud-card {
+  width: 100%;
+  height: 90%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, rgba(0, 15, 30, 0.6) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  box-shadow: inset 0 0 30px rgba(255, 255, 255, 0.1), 0 0 15px rgba(103, 194, 58, 0.1);
+  transition: all 0.3s ease;
+}
+
+.metric-card.hud-card:hover {
+  box-shadow: inset 0 0 50px rgba(255, 255, 255, 0.2), 0 0 20px rgba(255, 255, 255, 0.2);
 }
 
 .metric-title {
   color: #a3d9ff;
-  font-size: 15px;
+  font-size: 22px;
   font-weight: bold;
-  letter-spacing: 1px;
-}
-
-.metric-value {
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 32px;
-  font-weight: bold;
-}
-
-.metric-value.total {
-  color: #00ffff;
-  text-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+  letter-spacing: 2px;
+  text-shadow: 0 0 5px rgba(163, 217, 255, 0.5);
 }
 
 .metric-value.active {
-  color: #f7eb70;
-  text-shadow: 0 0 10px rgba(238, 199, 121, 0.8);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 80px; /* 超大号字体 */
+  font-weight: bold;
+  color: #76cdf6;
+  line-height: 1;
+  text-shadow: 
+    0 0 20px rgba(48, 123, 235, 0.8), 
+    0 0 40px rgba(77, 137, 248, 0.4),
+    0 0 10px rgba(255, 255, 255, 0.5); /* 核心白光边缘 */
 }
 
 /* 控制台网格布局 */
