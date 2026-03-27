@@ -202,6 +202,16 @@ function pushBox(boxes: any[], x: number, y: number, w: number, h: number, conf:
   const typeIndex = Math.floor(cls);
   const typeName = classNames[typeIndex] || `目标${typeIndex}`;
 
+  console.log("坐标:", boxX, boxY, realW, realH);
+  console.log("类型:", typeName);
+  console.log("置信度:", conf.toFixed(2));
+  console.log("类别:", cls);
+  //console.log("原始宽度:", origWidth);
+  //console.log("原始高度:", origHeight);
+  //console.log("是否归一化:", isNormalized);
+  //console.log("归一化宽度:", realW);
+  //console.log("归一化高度:", realH);
+
   boxes.push({
     x: boxX,
     y: boxY,
