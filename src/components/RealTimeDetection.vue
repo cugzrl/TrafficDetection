@@ -1314,7 +1314,7 @@ onUnmounted(() => {
 
 .metric-title {
   color: #a3d9ff;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: bold;
   letter-spacing: 2px;
   text-shadow: 0 0 5px rgba(163, 217, 255, 0.5);
@@ -1322,7 +1322,7 @@ onUnmounted(() => {
 
 .metric-value.active {
   font-family: 'Courier New', Courier, monospace;
-  font-size: 80px; /* 超大号字体 */
+  font-size: 70px; 
   font-weight: bold;
   color: #76cdf6;
   line-height: 1;
