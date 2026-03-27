@@ -22,7 +22,7 @@ const pauseDetection = () => {
   ElMessage.info('已暂停识别')
 }
 
-const categories = ['汽车', '三轮车', '面包车', '公交车', '行人', '骑自行车的人', '骑电动车的人']
+const categories = ['汽车', '三轮车', '面包车', '公交车', '骑电动车的人', '骑自行车的人', '行人']
 const colorMap: Record<string, string> = {
   '汽车': '#2EABFF',
   '三轮车': '#EF6B6B',
