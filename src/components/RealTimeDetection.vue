@@ -7,7 +7,6 @@ import DashboardHeader from './RealTimeDetection/DashboardHeader.vue'
 import VideoMonitor from './RealTimeDetection/VideoMonitor.vue'
 import TrafficCharts from './RealTimeDetection/TrafficCharts.vue'
 import ControlConsole from './RealTimeDetection/ControlConsole.vue'
-import HudMetric from './RealTimeDetection/HudMetric.vue'
 import DetectionTable from './RealTimeDetection/DetectionTable.vue'
 import ConfigDrawers from './RealTimeDetection/ConfigDrawers.vue'
 import { useClock } from '../composables/useClock'
@@ -41,7 +40,6 @@ const {
   wsStatus,
   modelStatus,
   isDetecting,
-  currentActive,
   boxes,
   latestFrameSrc,
   connect,
@@ -177,19 +175,26 @@ const handleDbFormUpdate = (value: DbFormState) => {
             <VideoMonitor :latest-frame-src="latestFrameSrc" :boxes="boxes" />
           </div>
 
-          <div class="center-column">
-            <TrafficCharts :boxes="boxes" />
-          </div>
+          <div class="analysis-column">
+            <div class="upper-row">
+              <div class="pie-column">
+                <TrafficCharts variant="pie" :boxes="boxes" />
+              </div>
 
-          <div class="right-column">
-            <ControlConsole
-              :model-status="modelStatus"
-              @upload="handleVideoChange"
-              @start="openVideoSelector"
-              @pause="pauseDetection"
-              @config="openConfigDrawer"
-            />
-            <HudMetric :current-active="currentActive" />
+              <div class="control-column">
+                <ControlConsole
+                  :model-status="modelStatus"
+                  @upload="handleVideoChange"
+                  @start="openVideoSelector"
+                  @pause="pauseDetection"
+                  @config="openConfigDrawer"
+                />
+              </div>
+            </div>
+
+            <div class="lower-row">
+              <TrafficCharts variant="line" :boxes="boxes" />
+            </div>
           </div>
         </div>
 
@@ -276,41 +281,78 @@ const handleDbFormUpdate = (value: DbFormState) => {
 
 .top-section {
   display: flex;
-  gap: 20px;
+  gap: 15px;
   height: 55vh;
-  min-height: 400px;
+  min-height: 420px;
 }
 
 .left-column,
-.center-column,
-.right-column {
+.analysis-column,
+.upper-row,
+.lower-row,
+.pie-column,
+.control-column {
   height: 100%;
   box-sizing: border-box;
   min-height: 0;
 }
 
 .left-column {
-  flex: 2.5;
+  flex: 3.2;
   display: flex;
   flex-direction: column;
 }
 
-.center-column {
-  flex: 1.5;
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-.right-column {
-  flex: 0.8;
+.analysis-column {
+  flex: 2.0;
   display: flex;
   flex-direction: column;
   gap: 15px;
+  min-width: 0;
 }
 
-.right-column > * {
-  min-height: 0;
+.upper-row {
+  flex: 1.0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.20fr);
+  gap: 15px;
+  width: 100%;
+}
+
+.lower-row {
+  flex: 1.1;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.pie-column {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+}
+
+.control-column {
+  display: flex;
+  align-items: stretch;
+  justify-self: stretch;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 0 !important; 
+}
+
+.pie-column > *{
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.control-column > * {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }
 
 .bottom-section {

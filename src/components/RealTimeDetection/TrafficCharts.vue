@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { PieChart, TrendCharts } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import type { DetectionBox } from '../../composables/useDetectionWS'
 
 const props = withDefaults(defineProps<{
   boxes?: DetectionBox[]
+  variant?: 'pie' | 'line' | 'both'
 }>(), {
-  boxes: () => []
+  boxes: () => [],
+  variant: 'both'
 })
 
 const categories = ['汽车', '面包车', '公交车', '三轮车', '骑电动车的人', '骑自行车的人', '行人']
@@ -29,6 +31,10 @@ let pieChartInstance: echarts.ECharts | null = null
 let lineChartInstance: echarts.ECharts | null = null
 let lastLineChartUpdateTime = 0
 let resizeObserver: ResizeObserver | null = null
+
+const showPieChart = computed(() => props.variant === 'pie' || props.variant === 'both')
+const showLineChart = computed(() => props.variant === 'line' || props.variant === 'both')
+const isSingleChart = computed(() => props.variant !== 'both')
 
 const initPieChart = () => {
   if (!pieChartRef.value) {
@@ -64,12 +70,12 @@ const initPieChart = () => {
       }
     ],
     series: [
-      {
-        name: '目标类型',
-        type: 'pie',
-        radius: ['40%', '70%'],
-        center: ['50%', '50%'],
-        avoidLabelOverlap: false,
+        {
+          name: '目标类型',
+          type: 'pie',
+          radius: ['36%', '60%'],
+          center: ['50%', '50%'],
+          avoidLabelOverlap: false,
         itemStyle: {
           borderRadius: 5,
           borderColor: 'rgba(0,0,0,0.5)',
@@ -216,8 +222,14 @@ watch(
 )
 
 onMounted(() => {
-  initPieChart()
-  initLineChart()
+  if (showPieChart.value) {
+    initPieChart()
+  }
+
+  if (showLineChart.value) {
+    initLineChart()
+  }
+
   updateChartsWithBoxes(props.boxes)
   handleResize()
 
@@ -238,8 +250,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="chartGroupRef" class="chart-group">
-    <el-card class="tech-panel chart-panel" shadow="never">
+  <div ref="chartGroupRef" :class="['chart-group', { single: isSingleChart }]">
+    <el-card v-if="showPieChart" class="tech-panel chart-panel" shadow="never">
       <template #header>
         <div class="panel-header">
           <span class="panel-title">
@@ -251,7 +263,7 @@ onUnmounted(() => {
       <div ref="pieChartRef" class="chart-container"></div>
     </el-card>
 
-    <el-card class="tech-panel chart-panel" shadow="never">
+    <el-card v-if="showLineChart" class="tech-panel chart-panel" shadow="never">
       <template #header>
         <div class="panel-header">
           <span class="panel-title">
@@ -270,8 +282,14 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 15px;
+  width: 100%;
+  flex: 1;
   height: 100%;
   min-height: 0;
+}
+
+.chart-group.single {
+  gap: 0;
 }
 
 .tech-panel {

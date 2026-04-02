@@ -300,24 +300,24 @@ const handleStartInference = () => {
   font-weight: bold;
 }
 
-:deep(.tech-select-popper) {
+:global(.tech-select-popper) {
   background: rgba(0, 30, 60, 0.9) !important;
   border: 1px solid rgba(0, 210, 255, 0.5) !important;
   box-shadow: 0 0 15px rgba(0, 210, 255, 0.3) !important;
   backdrop-filter: blur(10px);
 }
 
-:deep(.tech-select-popper .el-select-dropdown__item) {
+:global(.tech-select-popper .el-select-dropdown__item) {
   color: #e0e0e0;
 }
 
-:deep(.tech-select-popper .el-select-dropdown__item.hover),
-:deep(.tech-select-popper .el-select-dropdown__item:hover) {
+:global(.tech-select-popper .el-select-dropdown__item.hover),
+:global(.tech-select-popper .el-select-dropdown__item:hover) {
   background-color: rgba(0, 210, 255, 0.2) !important;
   color: #00ffff;
 }
 
-:deep(.tech-select-popper .el-select-dropdown__item.selected) {
+:global(.tech-select-popper .el-select-dropdown__item.selected) {
   color: #00ffff;
   font-weight: bold;
   background-color: rgba(0, 210, 255, 0.1) !important;
@@ -412,14 +412,14 @@ const handleStartInference = () => {
   cursor: not-allowed;
 }
 
-:deep(.tech-drawer) {
-  background: rgba(0, 15, 30, 0.95) !important;
+:global(.tech-drawer) {
+  background: linear-gradient(180deg, rgba(6, 24, 48, 0.96) 0%, rgba(2, 12, 28, 0.96) 100%) !important;
   backdrop-filter: blur(10px);
   border-left: 1px solid rgba(0, 210, 255, 0.3);
-  box-shadow: -10px 0 30px rgba(0, 210, 255, 0.1);
+  box-shadow: -10px 0 30px rgba(0, 210, 255, 0.15);
 }
 
-:deep(.tech-drawer .el-drawer__header) {
+:global(.tech-drawer .el-drawer__header) {
   margin-bottom: 0;
   padding: 20px;
   border-bottom: 1px solid rgba(0, 210, 255, 0.3);
@@ -429,7 +429,7 @@ const handleStartInference = () => {
   text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
 }
 
-:deep(.tech-drawer .el-drawer__body) {
+:global(.tech-drawer .el-drawer__body) {
   padding: 0 !important;
   overflow: hidden !important;
 }
@@ -480,7 +480,7 @@ const handleStartInference = () => {
   padding: 0;
 }
 
-:deep(.tech-dialog) {
+:global(.tech-dialog) {
   background: rgba(0, 15, 30, 0.95) !important;
   backdrop-filter: blur(10px);
   border: 1px solid rgba(0, 210, 255, 0.3);
@@ -488,24 +488,24 @@ const handleStartInference = () => {
   border-radius: 8px;
 }
 
-:deep(.tech-dialog .el-dialog__header) {
+:global(.tech-dialog .el-dialog__header) {
   margin-right: 0;
   padding: 20px;
   border-bottom: 1px solid rgba(0, 210, 255, 0.3);
 }
 
-:deep(.tech-dialog .el-dialog__title) {
+:global(.tech-dialog .el-dialog__title) {
   color: #00ffff;
   font-size: 18px;
   font-weight: bold;
   text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
 }
 
-:deep(.tech-dialog .el-dialog__body) {
+:global(.tech-dialog .el-dialog__body) {
   padding: 30px 20px;
 }
 
-:deep(.tech-dialog .el-dialog__footer) {
+:global(.tech-dialog .el-dialog__footer) {
   padding: 15px 20px;
   border-top: 1px solid rgba(0, 210, 255, 0.1);
 }

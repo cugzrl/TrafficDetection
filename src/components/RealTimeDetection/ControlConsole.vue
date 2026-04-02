@@ -43,6 +43,10 @@ const handleUploadChange = (uploadFile: UploadFile) => {
         </template>
       </el-upload>
 
+      <el-button type="primary" plain class="tech-btn grid-btn">
+        获取视频
+      </el-button>
+
       <el-button
         type="primary"
         class="tech-btn primary-btn grid-btn"
@@ -58,6 +62,10 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 
       <el-button type="primary" plain class="tech-btn grid-btn" @click="emit('config')">
         系统配置
+      </el-button>
+
+      <el-button type="primary" plain class="tech-btn grid-btn">
+        查看结果
       </el-button>
     </div>
   </el-card>
@@ -116,8 +124,9 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 }
 
 .control-panel {
-  flex: 0.85;
   min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .panel-header {
@@ -153,7 +162,7 @@ const handleUploadChange = (uploadFile: UploadFile) => {
   transform: scale(1.02) !important;
 }
 
-:deep(.primary-btn) {
+/* :deep(.primary-btn) {
   background: rgba(0, 210, 255, 0.2) !important;
   border-color: #00ffff !important;
 }
@@ -161,7 +170,7 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 :deep(.primary-btn:hover) {
   background: rgba(0, 210, 255, 0.4) !important;
   box-shadow: 0 0 20px rgba(0, 210, 255, 0.8), inset 0 0 10px rgba(0, 210, 255, 0.5) !important;
-}
+} */
 
 :deep(.tech-btn.is-disabled) {
   opacity: 0.6;
@@ -173,19 +182,21 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 .control-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 15px;
-  padding: 20px;
+  gap: 18px 10px;
+  padding: 20px 10px;
   height: 100%;
   box-sizing: border-box;
   align-items: center;
   align-content: center;
+  justify-items: stretch;
+  width: 100%;
 }
 
 .grid-btn {
   width: 100%;
-  height: 45px;
+  height: 40px;
   margin: 0 !important;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: bold;
   letter-spacing: 1px;
 }
