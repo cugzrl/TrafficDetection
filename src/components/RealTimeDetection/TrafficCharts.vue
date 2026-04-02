@@ -50,23 +50,12 @@ const initPieChart = () => {
         orient: 'vertical',
         right: '5%',
         top: 'middle',
-        itemGap: 12,
-        textStyle: {
-          color: '#a3d9ff',
-          fontSize: 14
-        },
-        data: ['汽车', '三轮车', '公交车', '面包车']
-      },
-      {
-        orient: 'vertical',
-        left: '5%',
-        top: 'middle',
         itemGap: 23,
         textStyle: {
           color: '#a3d9ff',
-          fontSize: 14
+          fontSize: 15
         },
-        data: ['行人', '骑自行车的人', '骑电动车的人']
+        data: ['汽车', '三轮车', '公交车', '面包车','行人', '骑自行车的人', '骑电动车的人']
       }
     ],
     series: [
@@ -74,7 +63,7 @@ const initPieChart = () => {
           name: '目标类型',
           type: 'pie',
           radius: ['36%', '60%'],
-          center: ['50%', '50%'],
+          center: ['35%', '50%'],
           avoidLabelOverlap: false,
         itemStyle: {
           borderRadius: 5,

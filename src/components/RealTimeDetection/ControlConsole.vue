@@ -11,6 +11,7 @@ const emit = defineEmits<{
   (e: 'start'): void
   (e: 'pause'): void
   (e: 'config'): void
+  (e: 'view-results'): void
 }>()
 
 const handleUploadChange = (uploadFile: UploadFile) => {
@@ -64,7 +65,7 @@ const handleUploadChange = (uploadFile: UploadFile) => {
         系统配置
       </el-button>
 
-      <el-button type="primary" plain class="tech-btn grid-btn">
+      <el-button type="primary" plain class="tech-btn grid-btn" @click="emit('view-results')">
         查看结果
       </el-button>
     </div>
@@ -182,7 +183,7 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 .control-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 18px 10px;
+  gap: 20px 12px;
   padding: 20px 10px;
   height: 100%;
   box-sizing: border-box;
@@ -194,9 +195,9 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 
 .grid-btn {
   width: 100%;
-  height: 40px;
+  height: 80px;
   margin: 0 !important;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: bold;
   letter-spacing: 1px;
 }

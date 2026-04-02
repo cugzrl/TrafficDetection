@@ -59,6 +59,7 @@ const {
 
 const videoListDialogVisible = ref(false)
 const configDrawerVisible = ref(false)
+const resultsDrawerVisible = ref(false)
 const videoList = ref<VideoListItem[]>([])
 const selectedVideoId = ref('')
 const dbForm = ref<DbFormState>({
@@ -72,6 +73,14 @@ const dbForm = ref<DbFormState>({
 
 const openConfigDrawer = () => {
   configDrawerVisible.value = true
+}
+
+const openResultsDrawer = () => {
+  resultsDrawerVisible.value = true
+}
+
+const closeResultsDrawer = () => {
+  resultsDrawerVisible.value = false
 }
 
 const openVideoSelector = async () => {
@@ -188,6 +197,7 @@ const handleDbFormUpdate = (value: DbFormState) => {
                   @start="openVideoSelector"
                   @pause="pauseDetection"
                   @config="openConfigDrawer"
+                  @view-results="openResultsDrawer"
                 />
               </div>
             </div>
@@ -197,16 +207,27 @@ const handleDbFormUpdate = (value: DbFormState) => {
             </div>
           </div>
         </div>
-
-        <div class="bottom-section">
-          <DetectionTable
-            :table-data="tableData"
-            :is-table-paused="isTablePaused"
-            @expand-change="handleTableExpandChange"
-          />
-        </div>
       </el-main>
     </el-container>
+
+    <el-drawer
+      v-model="resultsDrawerVisible"
+      direction="rtl"
+      size="40%"
+      :modal="false"
+      class="tech-drawer results-drawer"
+      :with-header="false"
+    >
+      <div class="drawer-content table-drawer-content">
+        <DetectionTable
+          :table-data="tableData"
+          :is-table-paused="isTablePaused"
+          :show-close-button="true"
+          @expand-change="handleTableExpandChange"
+          @close="closeResultsDrawer"
+        />
+      </div>
+    </el-drawer>
 
     <ConfigDrawers
       :drawer-visible="configDrawerVisible"
@@ -282,7 +303,8 @@ const handleDbFormUpdate = (value: DbFormState) => {
 .top-section {
   display: flex;
   gap: 15px;
-  height: 55vh;
+  flex: 1;
+  height: 100%;
   min-height: 420px;
 }
 
@@ -298,13 +320,13 @@ const handleDbFormUpdate = (value: DbFormState) => {
 }
 
 .left-column {
-  flex: 3.2;
+  flex: 3;
   display: flex;
   flex-direction: column;
 }
 
 .analysis-column {
-  flex: 2.0;
+  flex: 2;
   display: flex;
   flex-direction: column;
   gap: 15px;
@@ -355,10 +377,20 @@ const handleDbFormUpdate = (value: DbFormState) => {
   max-width: none;
 }
 
-.bottom-section {
+.table-drawer-content {
+  padding: 0;
   flex: 1;
-  min-height: 0;
   display: flex;
-  overflow: hidden;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+:global(.results-drawer .el-drawer__body) {
+  padding: 15px !important;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 </style>
