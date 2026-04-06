@@ -384,6 +384,18 @@ const handleCanvasClick = (event: MouseEvent) => {
   emit('box-click', hit?.box ?? null)
 }
 
+const play = async () => {
+  try {
+    await videoRef.value?.play()
+  } catch (error) {
+    console.warn('视频播放被阻止:', error)
+  }
+}
+
+const pause = () => {
+  videoRef.value?.pause()
+}
+
 watch(
   () => props.boxes,
   () => {
@@ -421,6 +433,11 @@ onUnmounted(() => {
   stopFrameLoop()
   resizeObserver?.disconnect()
 })
+
+defineExpose({
+  play,
+  pause
+})
 </script>
 
 <template>
@@ -440,7 +457,6 @@ onUnmounted(() => {
         ref="videoRef"
         class="media-layer"
         :src="mediaSrc"
-        autoplay
         muted
         loop
         playsinline

@@ -23,7 +23,16 @@ interface DbFormState {
   password: string
 }
 
+interface VideoMonitorExposed {
+  play: () => Promise<void> | void
+  pause: () => void
+}
+
 const API_BASE = 'http://127.0.0.1:8000'
+const BUFFER_START_THRESHOLD = 3.0
+const BUFFER_STOP_THRESHOLD = 0.5
+const BUFFERING_STATUS = '正在缓冲'
+const DETECTING_STATUS = '正在识别'
 
 const { currentTime } = useClock()
 
@@ -32,6 +41,7 @@ const {
   modelStatus,
   isDetecting,
   boxes,
+  timelineResults,
   latestKnownFps,
   connect,
   disconnect,
@@ -59,6 +69,7 @@ const resultsDrawerVisible = ref(false)
 const mediaList = ref<DetectionMediaItem[]>([])
 const selectedMediaId = ref('')
 const currentMedia = ref<DetectionMediaItem | null>(null)
+const videoMonitorRef = ref<VideoMonitorExposed | null>(null)
 const currentPlaybackTime = ref(0)
 const fallbackPlaybackFrameIndex = ref(0)
 const mediaLoaded = ref(false)
@@ -79,6 +90,23 @@ const currentMediaLabel = computed(() => currentMedia.value?.name ?? '未选择�
 const activeFrameRate = computed(() => currentMedia.value?.fps ?? latestKnownFps.value ?? 30)
 const effectiveMediaKind = computed<MediaKind>(() => currentMedia.value?.kind ?? 'unknown')
 const currentMediaSrc = computed(() => currentMedia.value?.previewSrc ?? '')
+const latestProcessedSecond = computed(() => {
+  const timeline = timelineResults.value
+  if (timeline.length === 0) {
+    return 0
+  }
+
+  const latestFrame = timeline[timeline.length - 1]
+  if (typeof latestFrame?.second === 'number' && Number.isFinite(latestFrame.second)) {
+    return latestFrame.second
+  }
+
+  if (typeof latestFrame?.timestampMs === 'number' && Number.isFinite(latestFrame.timestampMs)) {
+    return latestFrame.timestampMs / 1000
+  }
+
+  return 0
+})
 const activeDetectionFrame = computed(() => {
   if (currentMedia.value?.kind !== 'video') {
     return null
@@ -488,6 +516,34 @@ const handleDbFormUpdate = (value: DbFormState) => {
 }
 
 watch(
+  [latestProcessedSecond, currentPlaybackTime, isDetecting],
+  ([latestSecond, playbackTime, detecting]) => {
+    if (!videoMonitorRef.value || currentMedia.value?.kind !== 'video') {
+      return
+    }
+
+    if (!detecting && modelStatus.value !== '已完成') {
+      return
+    }
+
+    const bufferDiff = latestSecond - playbackTime
+
+    if (bufferDiff < BUFFER_STOP_THRESHOLD && modelStatus.value !== '已完成') {
+      videoMonitorRef.value.pause()
+      modelStatus.value = BUFFERING_STATUS
+      return
+    }
+
+    if (bufferDiff >= BUFFER_START_THRESHOLD || modelStatus.value === '已完成') {
+      void videoMonitorRef.value.play()
+      if (modelStatus.value === BUFFERING_STATUS) {
+        modelStatus.value = DETECTING_STATUS
+      }
+    }
+  }
+)
+
+watch(
   displayedBoxes,
   (nextBoxes) => {
     if (!selectedBoxKey.value) {
@@ -518,6 +574,7 @@ onUnmounted(() => {
         <div class="top-section">
           <div class="left-column">
             <VideoMonitor
+              ref="videoMonitorRef"
               :media-kind="effectiveMediaKind"
               :media-src="currentMediaSrc"
               :fallback-frame-src="''"
@@ -742,5 +799,4 @@ onUnmounted(() => {
   min-height: 0;
 }
 </style>
-
 
