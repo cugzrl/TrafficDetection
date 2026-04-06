@@ -36,6 +36,8 @@ const props = withDefaults(defineProps<{
   frameRate?: number
   currentFrameIndex?: number | null
   mediaLabel?: string
+  buffering?: boolean
+  bufferingLabel?: string
 }>(), {
   mediaKind: 'unknown',
   mediaSrc: '',
@@ -44,7 +46,9 @@ const props = withDefaults(defineProps<{
   selectedBoxKey: null,
   frameRate: 25,
   currentFrameIndex: null,
-  mediaLabel: '未选择媒体'
+  mediaLabel: '未选择媒体',
+  buffering: false,
+  bufferingLabel: '正在缓冲检测结果'
 })
 
 const emit = defineEmits<{
@@ -376,7 +380,7 @@ const handleVideoLoaded = () => {
   }
 
   syncVideoFrame()
-  startFrameLoop()
+  stopFrameLoop()
 }
 
 const handleCanvasClick = (event: MouseEvent) => {
@@ -406,6 +410,23 @@ const play = async () => {
 
 const pause = () => {
   videoRef.value?.pause()
+}
+
+const resetToStart = () => {
+  const video = videoRef.value
+  if (!video) {
+    return
+  }
+
+  video.pause()
+
+  try {
+    video.currentTime = 0
+  } catch (error) {
+    console.warn('重置视频播放位置失败:', error)
+  }
+
+  syncVideoFrame()
 }
 
 watch(
@@ -448,7 +469,8 @@ onUnmounted(() => {
 
 defineExpose({
   play,
-  pause
+  pause,
+  resetToStart
 })
 </script>
 
@@ -469,7 +491,6 @@ defineExpose({
         ref="videoRef"
         class="media-layer"
         :src="mediaSrc"
-        autoplay
         muted
         loop
         playsinline
@@ -510,6 +531,11 @@ defineExpose({
 
       <div v-if="currentFrameIndex !== null && displayMode === 'video'" class="frame-badge">
         当前帧 {{ currentFrameIndex }}
+      </div>
+
+      <div v-if="displayMode === 'video' && buffering" class="buffering-overlay">
+        <div class="buffering-spinner"></div>
+        <div class="buffering-text">{{ bufferingLabel }}</div>
       </div>
 
       <div class="scan-line"></div>
@@ -658,6 +684,42 @@ defineExpose({
   text-shadow: 0 0 6px rgba(0, 255, 255, 0.5);
 }
 
+.buffering-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(1, 10, 20, 0.36);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+.buffering-spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid rgba(0, 210, 255, 0.18);
+  border-top-color: #00ffff;
+  border-right-color: #00d2ff;
+  box-shadow: 0 0 18px rgba(0, 210, 255, 0.25);
+  animation: buffering-spin 0.9s linear infinite;
+}
+
+.buffering-text {
+  padding: 8px 14px;
+  border: 1px solid rgba(0, 210, 255, 0.28);
+  background: rgba(2, 18, 35, 0.72);
+  color: #dffcff;
+  font-size: 13px;
+  letter-spacing: 0.6px;
+  text-shadow: 0 0 6px rgba(0, 210, 255, 0.3);
+  box-shadow: 0 0 12px rgba(0, 210, 255, 0.12);
+}
+
 .badge-label {
   color: #00d2ff;
 }
@@ -704,6 +766,16 @@ defineExpose({
   font-size: 13px;
   line-height: 1.7;
   color: #95dfff;
+}
+
+@keyframes buffering-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .scan-line {

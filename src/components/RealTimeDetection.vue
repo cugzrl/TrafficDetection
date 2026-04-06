@@ -23,7 +23,16 @@ interface DbFormState {
   password: string
 }
 
+interface VideoMonitorExposed {
+  play: () => Promise<void> | void
+  pause: () => void
+  resetToStart: () => void
+}
+
 const API_BASE = 'http://127.0.0.1:8000'
+const INITIAL_BUFFER_SECONDS = 10
+const RESUME_BUFFER_SECONDS = 3
+const STOP_BUFFER_SECONDS = 0.5
 
 const { currentTime } = useClock()
 
@@ -33,6 +42,7 @@ const {
   isDetecting,
   boxes,
   frameResults,
+  latestFrameIndex,
   latestKnownFps,
   connect,
   disconnect,
@@ -58,11 +68,15 @@ const configDrawerVisible = ref(false)
 const resultsDrawerVisible = ref(false)
 const mediaList = ref<DetectionMediaItem[]>([])
 const selectedMediaId = ref('')
+const videoMonitorRef = ref<VideoMonitorExposed | null>(null)
 const currentMedia = ref<DetectionMediaItem | null>(null)
 const detectionResultMediaId = ref<string | null>(null)
 const fallbackPlaybackFrameIndex = ref(0)
 const mediaLoaded = ref(false)
 const pendingAutoStart = ref(false)
+const hasPlaybackStarted = ref(false)
+const isPlaybackBuffering = ref(false)
+const playbackBufferLabel = ref('正在缓冲检测结果')
 const selectedBox = ref<DetectionBox | null>(null)
 const selectedBoxKey = ref<string | null>(null)
 const localPreviewUrl = ref<string | null>(null)
@@ -78,6 +92,9 @@ const dbForm = ref<DbFormState>({
 const currentMediaLabel = computed(() => currentMedia.value?.name ?? '未选择视频')
 //const activeFrameRate = computed(() => currentMedia.value?.fps ?? 30)
 const activeFrameRate = computed(() => currentMedia.value?.fps ?? latestKnownFps.value ?? 30)
+const initialBufferFrames = computed(() => Math.max(1, Math.ceil(activeFrameRate.value * INITIAL_BUFFER_SECONDS)))
+const resumeBufferFrames = computed(() => Math.max(1, Math.ceil(activeFrameRate.value * RESUME_BUFFER_SECONDS)))
+const stopBufferFrames = computed(() => Math.max(1, Math.ceil(activeFrameRate.value * STOP_BUFFER_SECONDS)))
 const effectiveMediaKind = computed<MediaKind>(() => currentMedia.value?.kind ?? 'unknown')
 const currentMediaSrc = computed(() => currentMedia.value?.previewSrc ?? '')
 const activeDetectionFrame = computed<DetectionFrameResult | null>(() => {
@@ -257,6 +274,18 @@ const closeResultsDrawer = () => {
   resultsDrawerVisible.value = false
 }
 
+const resetPlaybackBufferState = (label = '正在缓冲检测结果') => {
+  hasPlaybackStarted.value = false
+  isPlaybackBuffering.value = true
+  playbackBufferLabel.value = label
+}
+
+const resumePlaybackFromCachedResults = () => {
+  hasPlaybackStarted.value = true
+  isPlaybackBuffering.value = false
+  playbackBufferLabel.value = ''
+}
+
 const setCurrentMediaSession = (media: DetectionMediaItem) => {
   const isSameMedia = currentMedia.value?.id === media.id && media.id !== ''
 
@@ -267,6 +296,7 @@ const setCurrentMediaSession = (media: DetectionMediaItem) => {
   currentMedia.value = media
   selectedMediaId.value = media.id
   pendingAutoStart.value = false
+  resetPlaybackBufferState()
 
   if (isSameMedia) {
     return
@@ -283,11 +313,13 @@ const setCurrentMediaSession = (media: DetectionMediaItem) => {
 const startDetectionForCurrentMedia = ({
   forceImmediate = false,
   silent = false,
-  preserveExistingResults
+  preserveExistingResults,
+  restartFromCachedResults = false
 }: {
   forceImmediate?: boolean
   silent?: boolean
   preserveExistingResults?: boolean
+  restartFromCachedResults?: boolean
 } = {}) => {
   const media = currentMedia.value
 
@@ -314,6 +346,23 @@ const startDetectionForCurrentMedia = ({
   }
 
   const shouldPreserveResults = preserveExistingResults ?? (detectionResultMediaId.value === media.id)
+  const shouldRestartFromCachedResults =
+    media.kind === 'video' &&
+    restartFromCachedResults &&
+    shouldPreserveResults &&
+    frameResults.value.size > 0
+
+  if (media.kind === 'video') {
+    videoMonitorRef.value?.resetToStart()
+    fallbackPlaybackFrameIndex.value = 1
+
+    if (shouldRestartFromCachedResults) {
+      resumePlaybackFromCachedResults()
+    } else {
+      resetPlaybackBufferState('正在缓冲检测结果')
+    }
+  }
+
   const controller = connect(media.id, {
     preserveResults: shouldPreserveResults
   })
@@ -324,6 +373,10 @@ const startDetectionForCurrentMedia = ({
   detectionResultMediaId.value = media.id
   pendingAutoStart.value = false
   mediaListDialogVisible.value = false
+
+  if (shouldRestartFromCachedResults) {
+    void videoMonitorRef.value?.play()
+  }
 
   if (!silent) {
     ElMessage.success('检测任务已启动')
@@ -431,7 +484,8 @@ const handleStartInferenceFromLibrary = (mediaId?: string) => {
   const started = startDetectionForCurrentMedia({
     forceImmediate: true,
     silent: true,
-    preserveExistingResults: isSameMedia
+    preserveExistingResults: isSameMedia,
+    restartFromCachedResults: isSameMedia
   })
 
   if (started) {
@@ -446,6 +500,8 @@ const handleStartInferenceFromLibrary = (mediaId?: string) => {
 const pauseDetection = () => {
   if (sseStatus.value === 'connected' || sseStatus.value === 'connecting' || isDetecting.value) {
     disconnect()
+    videoMonitorRef.value?.pause()
+    isPlaybackBuffering.value = false
     ElMessage.info('已暂停识别')
     return
   }
@@ -459,6 +515,8 @@ const handleDbConnect = () => {
 
 const handleMediaLoaded = (_payload: MediaLoadedPayload) => {
   mediaLoaded.value = true
+  videoMonitorRef.value?.pause()
+  resetPlaybackBufferState('正在缓冲检测结果')
 
   if (pendingAutoStart.value) {
     const started = startDetectionForCurrentMedia({ forceImmediate: true, silent: true })
@@ -519,6 +577,67 @@ const handleDbFormUpdate = (value: DbFormState) => {
 }
 
 watch(
+  [latestFrameIndex, currentFrameIndex, mediaLoaded, isDetecting, modelStatus, effectiveMediaKind],
+  ([nextLatestFrameIndex, nextPlaybackFrameIndex, nextMediaLoaded, nextIsDetecting, nextModelStatus, nextMediaKind]) => {
+    if (nextMediaKind !== 'video' || !nextMediaLoaded || !videoMonitorRef.value) {
+      return
+    }
+
+    const latestBufferedFrameIndex = nextLatestFrameIndex ?? 0
+    const playbackFrameIndex = Math.max(1, nextPlaybackFrameIndex ?? 1)
+
+    if (nextModelStatus === '已完成') {
+      const shouldResumeCompletedPlayback = isPlaybackBuffering.value || !hasPlaybackStarted.value
+      isPlaybackBuffering.value = false
+      playbackBufferLabel.value = ''
+      hasPlaybackStarted.value = true
+      if (shouldResumeCompletedPlayback) {
+        void videoMonitorRef.value.play()
+      }
+      return
+    }
+
+    if (!nextIsDetecting && latestBufferedFrameIndex === 0) {
+      isPlaybackBuffering.value = true
+      playbackBufferLabel.value = '正在缓冲'
+      videoMonitorRef.value.pause()
+      return
+    }
+
+    if (!hasPlaybackStarted.value) {
+      if (latestBufferedFrameIndex >= initialBufferFrames.value) {
+        hasPlaybackStarted.value = true
+        isPlaybackBuffering.value = false
+        playbackBufferLabel.value = ''
+        void videoMonitorRef.value.play()
+        return
+      }
+
+      const bufferedSeconds = latestBufferedFrameIndex / Math.max(1, activeFrameRate.value)
+      isPlaybackBuffering.value = true
+      playbackBufferLabel.value = `正在缓冲检测结果 ${bufferedSeconds.toFixed(1)} / ${INITIAL_BUFFER_SECONDS}s`
+      videoMonitorRef.value.pause()
+      return
+    }
+
+    const bufferedAheadFrames = latestBufferedFrameIndex - playbackFrameIndex
+    if (bufferedAheadFrames <= stopBufferFrames.value) {
+      isPlaybackBuffering.value = true
+      playbackBufferLabel.value = '检测结果追帧中，正在缓冲...'
+      videoMonitorRef.value.pause()
+      return
+    }
+
+    if (isPlaybackBuffering.value && bufferedAheadFrames >= resumeBufferFrames.value) {
+      isPlaybackBuffering.value = false
+      playbackBufferLabel.value = ''
+      void videoMonitorRef.value.play()
+    }
+  },
+  { immediate: true }
+)
+
+watch(
   displayedBoxes,
   (nextBoxes) => {
     if (!selectedBoxKey.value) {
@@ -549,6 +668,7 @@ onUnmounted(() => {
         <div class="top-section">
           <div class="left-column">
             <VideoMonitor
+              ref="videoMonitorRef"
               :media-kind="effectiveMediaKind"
               :media-src="currentMediaSrc"
               :fallback-frame-src="''"
@@ -557,6 +677,8 @@ onUnmounted(() => {
               :frame-rate="activeFrameRate"
               :current-frame-index="currentFrameIndex"
               :media-label="currentMediaLabel"
+              :buffering="isPlaybackBuffering"
+              :buffering-label="playbackBufferLabel"
               @media-loaded="handleMediaLoaded"
               @frame-change="handleFrameChange"
               @box-click="handleBoxSelect"
@@ -773,5 +895,3 @@ onUnmounted(() => {
   min-height: 0;
 }
 </style>
-
-
