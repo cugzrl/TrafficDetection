@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
 import { Coin, Setting } from '@element-plus/icons-vue'
+import type { DetectionMediaItem } from '../../types/detection'
 
 interface DbFormState {
   type: string
@@ -10,14 +11,6 @@ interface DbFormState {
   username: string
   password: string
 }
-
-type VideoListItem =
-  | string
-  | {
-      id?: string | number
-      name?: string
-      [key: string]: unknown
-    }
 
 const createDefaultDbForm = (): DbFormState => ({
   type: 'MySQL',
@@ -32,19 +25,19 @@ const props = withDefaults(defineProps<{
   drawerVisible?: boolean
   dialogVisible?: boolean
   modelStatus: string
-  videoList?: VideoListItem[]
+  mediaList?: DetectionMediaItem[]
   dbForm: DbFormState
-  selectedVideoId: string
+  selectedMediaId: string
 }>(), {
   drawerVisible: false,
   dialogVisible: false,
-  videoList: () => []
+  mediaList: () => []
 })
 
 const emit = defineEmits<{
   (e: 'update:drawerVisible', value: boolean): void
   (e: 'update:dialogVisible', value: boolean): void
-  (e: 'update:selectedVideoId', value: string): void
+  (e: 'update:selectedMediaId', value: string): void
   (e: 'update:dbForm', value: DbFormState): void
   (e: 'connect-db', value: DbFormState): void
   (e: 'start-inference', value: string): void
@@ -60,9 +53,9 @@ const dialogVisibleProxy = computed({
   set: (value: boolean) => emit('update:dialogVisible', value)
 })
 
-const selectedVideoIdProxy = computed({
-  get: () => props.selectedVideoId,
-  set: (value: string) => emit('update:selectedVideoId', value)
+const selectedMediaIdProxy = computed({
+  get: () => props.selectedMediaId,
+  set: (value: string) => emit('update:selectedMediaId', value)
 })
 
 const localDbForm = reactive<DbFormState>(createDefaultDbForm())
@@ -93,7 +86,7 @@ watch(
 )
 
 const statusClass = computed(() => {
-  if (props.modelStatus === '已就绪') {
+  if (props.modelStatus === '已就绪' || props.modelStatus === '已完成') {
     return 'ready'
   }
 
@@ -104,28 +97,9 @@ const statusClass = computed(() => {
   return 'offline'
 })
 
-const getVideoLabel = (item: VideoListItem) => {
-  if (typeof item === 'string') {
-    return item
-  }
-
-  return item.name || String(item.id || '')
-}
-
-const getVideoValue = (item: VideoListItem) => {
-  if (typeof item === 'string') {
-    return item
-  }
-
-  return item.id !== undefined ? String(item.id) : item.name || ''
-}
-
-const getVideoKey = (item: VideoListItem) => {
-  if (typeof item === 'string') {
-    return item
-  }
-
-  return String(item.id ?? item.name ?? '')
+const getMediaOptionLabel = (item: DetectionMediaItem) => {
+  const prefix = item.kind === 'image' ? '[图片]' : '[视频]'
+  return `${prefix} ${item.name}`
 }
 
 const handleConnectDb = () => {
@@ -133,7 +107,7 @@ const handleConnectDb = () => {
 }
 
 const handleStartInference = () => {
-  emit('start-inference', selectedVideoIdProxy.value)
+  emit('start-inference', selectedMediaIdProxy.value)
 }
 </script>
 
@@ -222,22 +196,22 @@ const handleStartInference = () => {
   <el-dialog
     v-model="dialogVisibleProxy"
     title="选择要进行推理的视频"
-    width="400px"
+    width="420px"
     class="tech-dialog"
   >
     <div class="dialog-content">
       <el-select
-        v-model="selectedVideoIdProxy"
+        v-model="selectedMediaIdProxy"
         placeholder="请选择视频"
         class="tech-input"
         style="width: 100%"
         popper-class="tech-select-popper"
       >
         <el-option
-          v-for="item in videoList"
-          :key="getVideoKey(item)"
-          :label="getVideoLabel(item)"
-          :value="getVideoValue(item)"
+          v-for="item in mediaList"
+          :key="item.id"
+          :label="getMediaOptionLabel(item)"
+          :value="item.id"
         />
       </el-select>
     </div>
@@ -246,7 +220,7 @@ const handleStartInference = () => {
       <span class="dialog-footer">
         <el-button class="tech-btn" @click="dialogVisibleProxy = false">取消</el-button>
         <el-button type="primary" class="tech-btn primary-btn" @click="handleStartInference">
-          开始连接并推理
+          载入并开始推理
         </el-button>
       </span>
     </template>
@@ -524,3 +498,4 @@ const handleStartInference = () => {
   width: 100%;
 }
 </style>
+

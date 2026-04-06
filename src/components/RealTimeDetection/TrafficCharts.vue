@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { PieChart, TrendCharts } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import type { DetectionBox } from '../../composables/useDetectionWS'
+import type { DetectionBox } from '../../types/detection'
 
 const props = withDefaults(defineProps<{
   boxes?: DetectionBox[]
@@ -360,3 +360,4 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 </style>
+

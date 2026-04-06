@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { Setting, Upload } from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { Setting, Upload, VideoPlay, VideoPause, Collection } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
 
-defineProps<{
+const props = defineProps<{
   modelStatus: string
+  connectionStatus?: string
+  currentMediaLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -12,7 +15,20 @@ const emit = defineEmits<{
   (e: 'pause'): void
   (e: 'config'): void
   (e: 'view-results'): void
+  (e: 'library'): void
 }>()
+
+const connectionLabelMap: Record<string, string> = {
+  idle: '空闲',
+  connecting: '连接中',
+  connected: '已连接',
+  closed: '已关闭',
+  error: '异常'
+}
+
+const currentConnectionLabel = computed(() => {
+  return connectionLabelMap[props.connectionStatus || 'idle'] || props.connectionStatus || '空闲'
+})
 
 const handleUploadChange = (uploadFile: UploadFile) => {
   emit('upload', uploadFile)
@@ -30,6 +46,18 @@ const handleUploadChange = (uploadFile: UploadFile) => {
       </div>
     </template>
 
+    <div class="status-board">
+      <div class="status-item wide">
+        <span class="status-label">交通要素识别模型</span>
+        <span class="status-value">{{ modelStatus }}</span>
+      </div>
+      
+      <div class="status-item wide">
+        <span class="status-label">当前媒体</span>
+        <span class="status-value ellipsis">{{ currentMediaLabel || '未选择视频' }}</span>
+      </div>
+    </div>
+
     <div class="control-grid">
       <el-upload
         action=""
@@ -44,20 +72,21 @@ const handleUploadChange = (uploadFile: UploadFile) => {
         </template>
       </el-upload>
 
-      <el-button type="primary" plain class="tech-btn grid-btn">
-        获取视频
+      <el-button type="primary" plain class="tech-btn grid-btn"  @click="emit('library')">
+        视频列表
       </el-button>
 
       <el-button
         type="primary"
         class="tech-btn primary-btn grid-btn"
+        :icon="VideoPlay"
         :disabled="modelStatus === '加载中'"
         @click="emit('start')"
       >
         开始识别
       </el-button>
 
-      <el-button type="warning" plain class="tech-btn grid-btn" @click="emit('pause')">
+      <el-button type="warning" plain class="tech-btn grid-btn" :icon="VideoPause" @click="emit('pause')">
         暂停识别
       </el-button>
 
@@ -146,6 +175,45 @@ const handleUploadChange = (uploadFile: UploadFile) => {
   gap: 8px;
 }
 
+.status-board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 14px 12px 0;
+}
+
+.status-item {
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 210, 255, 0.22);
+  background: rgba(0, 18, 34, 0.45);
+  box-shadow: inset 0 0 18px rgba(0, 210, 255, 0.06);
+  min-width: 0;
+}
+
+.status-item.wide {
+  grid-column: 1 / -1;
+}
+
+.status-label {
+  display: block;
+  color: #79d8ff;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.status-value {
+  color: #00ffff;
+  font-weight: bold;
+  text-shadow: 0 0 6px rgba(0, 255, 255, 0.38);
+}
+
+.ellipsis {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 :deep(.tech-btn) {
   background: rgba(0, 150, 255, 0.15) !important;
   border: 1px solid rgba(0, 210, 255, 0.5) !important;
@@ -163,16 +231,6 @@ const handleUploadChange = (uploadFile: UploadFile) => {
   transform: scale(1.02) !important;
 }
 
-/* :deep(.primary-btn) {
-  background: rgba(0, 210, 255, 0.2) !important;
-  border-color: #00ffff !important;
-}
-
-:deep(.primary-btn:hover) {
-  background: rgba(0, 210, 255, 0.4) !important;
-  box-shadow: 0 0 20px rgba(0, 210, 255, 0.8), inset 0 0 10px rgba(0, 210, 255, 0.5) !important;
-} */
-
 :deep(.tech-btn.is-disabled) {
   opacity: 0.6;
   transform: none !important;
@@ -183,8 +241,8 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 .control-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px 12px;
-  padding: 20px 10px;
+  gap: 8px 10px;
+  padding: 10px 10px;
   height: 100%;
   box-sizing: border-box;
   align-items: center;
@@ -195,9 +253,9 @@ const handleUploadChange = (uploadFile: UploadFile) => {
 
 .grid-btn {
   width: 100%;
-  height: 80px;
+  height: 42px;
   margin: 0 !important;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: bold;
   letter-spacing: 1px;
 }
@@ -210,3 +268,5 @@ const handleUploadChange = (uploadFile: UploadFile) => {
   width: 100%;
 }
 </style>
+
+

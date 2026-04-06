@@ -1,28 +1,16 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import type { DetectionBox, DetectionFrameResult, DetectionStreamPayload } from '../types/detection'
 
 const DEFAULT_WS_BASE = 'ws://127.0.0.1:8000'
+const DEFAULT_FRAME_CACHE_SIZE = 600
 
 export type DetectionConnectionStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
-
-export interface DetectionBox {
-  x: number
-  y: number
-  width: number
-  height: number
-  type: string
-  [key: string]: unknown
-}
-
-export interface DetectionStreamPayload {
-  image?: string
-  boxes: DetectionBox[]
-  [key: string]: unknown
-}
 
 export interface UseDetectionWSOptions {
   wsBase?: string
   activeSyncInterval?: number
   autoSyncActive?: boolean
+  maxFrameCache?: number
   onOpen?: () => void
   onClose?: (event: CloseEvent) => void
   onError?: (event: Event) => void
@@ -35,19 +23,41 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null
 }
 
-const toNumber = (value: unknown) => {
+const toFiniteNumber = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value
   }
 
-  if (typeof value === 'string') {
+  if (typeof value === 'string' && value.trim().length > 0) {
     const parsed = Number(value)
     if (Number.isFinite(parsed)) {
       return parsed
     }
   }
 
-  return 0
+  return undefined
+}
+
+const getNumberByKeys = (value: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const parsed = toFiniteNumber(value[key])
+    if (parsed !== undefined) {
+      return parsed
+    }
+  }
+
+  return undefined
+}
+
+const getStringByKeys = (value: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate
+    }
+  }
+
+  return undefined
 }
 
 const normalizeBox = (value: unknown): DetectionBox | null => {
@@ -55,13 +65,34 @@ const normalizeBox = (value: unknown): DetectionBox | null => {
     return null
   }
 
+  const x = getNumberByKeys(value, ['x', 'left', 'xmin']) ?? 0
+  const y = getNumberByKeys(value, ['y', 'top', 'ymin']) ?? 0
+  const x2 = getNumberByKeys(value, ['x2', 'right', 'xmax'])
+  const y2 = getNumberByKeys(value, ['y2', 'bottom', 'ymax'])
+  const width = getNumberByKeys(value, ['width', 'w']) ?? (x2 !== undefined ? Math.max(0, x2 - x) : 0)
+  const height = getNumberByKeys(value, ['height', 'h']) ?? (y2 !== undefined ? Math.max(0, y2 - y) : 0)
+  const confidence =
+    getNumberByKeys(value, ['confidence', 'conf', 'score', 'probability']) ??
+    undefined
+  const frameIndex = getNumberByKeys(value, ['frameIndex', 'frame', 'frame_id']) ?? undefined
+  const trackId =
+    getStringByKeys(value, ['trackId', 'track_id']) ??
+    getNumberByKeys(value, ['trackId', 'track_id'])
+  const objectId =
+    getStringByKeys(value, ['objectId', 'object_id', 'id']) ??
+    getNumberByKeys(value, ['objectId', 'object_id', 'id'])
+
   return {
     ...value,
-    x: toNumber(value.x),
-    y: toNumber(value.y),
-    width: toNumber(value.width),
-    height: toNumber(value.height),
-    type: typeof value.type === 'string' ? value.type : '未知目标'
+    x,
+    y,
+    width,
+    height,
+    type: getStringByKeys(value, ['type', 'label', 'className', 'name']) ?? '未知目标',
+    confidence,
+    frameIndex,
+    trackId,
+    objectId
   }
 }
 
@@ -74,11 +105,19 @@ const normalizePayload = (value: unknown): DetectionStreamPayload | null => {
   const boxes = rawBoxes
     .map(normalizeBox)
     .filter((box): box is DetectionBox => box !== null)
+  const frameIndex =
+    getNumberByKeys(value, ['frameIndex', 'frame', 'frame_id']) ??
+    boxes.find((box) => typeof box.frameIndex === 'number')?.frameIndex
 
   return {
     ...value,
     image: typeof value.image === 'string' ? value.image : undefined,
-    boxes
+    boxes,
+    frameIndex,
+    fps: getNumberByKeys(value, ['fps', 'frameRate', 'frame_rate']),
+    timestampMs: getNumberByKeys(value, ['timestampMs', 'timestamp', 'ts']),
+    mediaType: getStringByKeys(value, ['mediaType', 'media_type', 'sourceType']),
+    taskId: getStringByKeys(value, ['taskId', 'task_id'])
   }
 }
 
@@ -87,6 +126,7 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
     wsBase = DEFAULT_WS_BASE,
     activeSyncInterval = 1000,
     autoSyncActive = true,
+    maxFrameCache = DEFAULT_FRAME_CACHE_SIZE,
     onOpen,
     onClose,
     onError,
@@ -101,7 +141,10 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
   const isDetecting = ref(false)
   const currentActive = ref(0)
   const boxes = ref<DetectionBox[]>([])
+  const frameResults = shallowRef<Map<number, DetectionFrameResult>>(new Map())
   const latestFrameBase64 = ref<string | null>(null)
+  const latestFrameIndex = ref<number | null>(null)
+  const latestKnownFps = ref(25)
   const lastPayload = shallowRef<DetectionStreamPayload | null>(null)
   const lastMessageAt = ref<number | null>(null)
   const connectionError = ref<string | null>(null)
@@ -112,6 +155,17 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
   const latestFrameSrc = computed(() => {
     return latestFrameBase64.value ? `data:image/jpeg;base64,${latestFrameBase64.value}` : ''
   })
+
+  const clearResults = () => {
+    boxes.value = []
+    frameResults.value = new Map()
+    latestFrameBase64.value = null
+    latestFrameIndex.value = null
+    lastPayload.value = null
+    lastMessageAt.value = null
+    pendingActiveCount = 0
+    currentActive.value = 0
+  }
 
   const startActiveSync = () => {
     if (activeSyncTimer !== null) {
@@ -130,6 +184,42 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
     }
   }
 
+  const pushFrameResult = (frameIndex: number, nextBoxes: DetectionBox[], timestampMs?: number) => {
+    const nextMap = new Map(frameResults.value)
+    nextMap.set(frameIndex, {
+      frameIndex,
+      boxes: nextBoxes,
+      timestampMs
+    })
+
+    while (nextMap.size > maxFrameCache) {
+      const oldestFrame = nextMap.keys().next().value
+      if (oldestFrame === undefined) {
+        break
+      }
+
+      nextMap.delete(oldestFrame)
+    }
+
+    frameResults.value = nextMap
+  }
+
+  const getBoxesForFrame = (frameIndex: number, maxFallbackGap = 2) => {
+    const directMatch = frameResults.value.get(frameIndex)
+    if (directMatch) {
+      return directMatch.boxes
+    }
+
+    for (let offset = 1; offset <= maxFallbackGap; offset += 1) {
+      const previousMatch = frameResults.value.get(frameIndex - offset)
+      if (previousMatch) {
+        return previousMatch.boxes
+      }
+    }
+
+    return boxes.value
+  }
+
   const handleSocketMessage = (rawMessage: string) => {
     try {
       const parsed = JSON.parse(rawMessage) as unknown
@@ -141,9 +231,18 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
 
       lastPayload.value = payload
       lastMessageAt.value = Date.now()
-      latestFrameBase64.value = payload.image ?? null
+      latestFrameBase64.value = payload.image ?? latestFrameBase64.value
       boxes.value = payload.boxes
       pendingActiveCount = payload.boxes.length
+
+      if (typeof payload.frameIndex === 'number') {
+        latestFrameIndex.value = payload.frameIndex
+        pushFrameResult(payload.frameIndex, payload.boxes, payload.timestampMs)
+      }
+
+      if (typeof payload.fps === 'number' && payload.fps > 0) {
+        latestKnownFps.value = payload.fps
+      }
 
       onPayload?.(payload)
       onBoxes?.(payload.boxes, payload)
@@ -155,6 +254,9 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
   const disconnect = () => {
     const socket = wsInstance.value
     if (!socket) {
+      wsStatus.value = 'closed'
+      modelStatus.value = '未加载'
+      isDetecting.value = false
       return
     }
 
@@ -168,6 +270,12 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
     wsStatus.value = 'closed'
     modelStatus.value = '未加载'
     isDetecting.value = false
+  }
+
+  const resetSession = () => {
+    disconnect()
+    clearResults()
+    connectionError.value = null
   }
 
   const connect = (videoId: string) => {
@@ -237,14 +345,20 @@ export const useDetectionWS = (options: UseDetectionWSOptions = {}) => {
     isDetecting,
     currentActive,
     boxes,
+    frameResults,
     latestFrameBase64,
     latestFrameSrc,
+    latestFrameIndex,
+    latestKnownFps,
     lastPayload,
     lastMessageAt,
     connectionError,
     connect,
     disconnect,
+    resetSession,
+    clearResults,
     startActiveSync,
-    stopActiveSync
+    stopActiveSync,
+    getBoxesForFrame
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
@@ -10,8 +10,9 @@ import ControlConsole from './RealTimeDetection/ControlConsole.vue'
 import DetectionTable from './RealTimeDetection/DetectionTable.vue'
 import ConfigDrawers from './RealTimeDetection/ConfigDrawers.vue'
 import { useClock } from '../composables/useClock'
-import { useTrafficMock, type TrafficTableRow } from '../composables/useTrafficMock'
-import { useDetectionWS } from '../composables/useDetectionWS'
+import { useDetectionSSE } from '../composables/useDetectionSSE'
+import type { DetectionBox, DetectionMediaItem, MediaKind, MediaLoadedPayload } from '../types/detection'
+import { getDetectionBoxKey, getMediaKindFromMime } from '../types/detection'
 
 interface DbFormState {
   type: string
@@ -22,46 +23,49 @@ interface DbFormState {
   password: string
 }
 
-type VideoListItem =
-  | string
-  | {
-      id?: string | number
-      name?: string
-      [key: string]: unknown
-    }
-
 const API_BASE = 'http://127.0.0.1:8000'
 
 const { currentTime } = useClock()
 
-const { tableData, isTablePaused, setPaused } = useTrafficMock()
-
 const {
-  wsStatus,
+  sseStatus,
   modelStatus,
   isDetecting,
   boxes,
-  latestFrameSrc,
+  latestKnownFps,
   connect,
-  disconnect
-} = useDetectionWS({
+  disconnect,
+  resetSession,
+  getFrameResultForTime
+} = useDetectionSSE({
   onOpen: () => {
-    ElMessage.success('已连接到推理服务器')
+    ElMessage.success('已连接到 SSE 推理通道')
+  },
+  onClose: () => {
+    ElMessage.success('当前视频检测已完成')
   },
   onError: (error) => {
-    console.error('WebSocket错误:', error)
-    ElMessage.error('推理连接发生错误')
+    console.error('SSE错误:', error)
+    ElMessage.error('SSE 推理连接发生错误')
   },
-  onParseError: (error) => {
-    console.error('解析WebSocket数据失败:', error)
+  onParseError: (error, rawMessage) => {
+    console.error('解析SSE数据失败:', error, rawMessage)
   }
 })
 
-const videoListDialogVisible = ref(false)
+const mediaListDialogVisible = ref(false)
 const configDrawerVisible = ref(false)
 const resultsDrawerVisible = ref(false)
-const videoList = ref<VideoListItem[]>([])
-const selectedVideoId = ref('')
+const mediaList = ref<DetectionMediaItem[]>([])
+const selectedMediaId = ref('')
+const currentMedia = ref<DetectionMediaItem | null>(null)
+const currentPlaybackTime = ref(0)
+const fallbackPlaybackFrameIndex = ref(0)
+const mediaLoaded = ref(false)
+const pendingAutoStart = ref(false)
+const selectedBox = ref<DetectionBox | null>(null)
+const selectedBoxKey = ref<string | null>(null)
+const localPreviewUrl = ref<string | null>(null)
 const dbForm = ref<DbFormState>({
   type: 'MySQL',
   host: '',
@@ -70,6 +74,175 @@ const dbForm = ref<DbFormState>({
   username: '',
   password: ''
 })
+
+const currentMediaLabel = computed(() => currentMedia.value?.name ?? '未选择视频')
+const activeFrameRate = computed(() => currentMedia.value?.fps ?? latestKnownFps.value ?? 30)
+const effectiveMediaKind = computed<MediaKind>(() => currentMedia.value?.kind ?? 'unknown')
+const currentMediaSrc = computed(() => currentMedia.value?.previewSrc ?? '')
+const activeDetectionFrame = computed(() => {
+  if (currentMedia.value?.kind !== 'video') {
+    return null
+  }
+
+  return getFrameResultForTime(currentPlaybackTime.value)
+})
+const currentFrameIndex = computed(() => {
+  return activeDetectionFrame.value?.frameIndex ?? fallbackPlaybackFrameIndex.value
+})
+const displayedBoxes = computed(() => {
+  if (currentMedia.value?.kind === 'video') {
+    return activeDetectionFrame.value?.boxes ?? []
+  }
+
+  return boxes.value
+})
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null
+}
+
+const getStringByKeys = (value: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate
+    }
+  }
+
+  return ''
+}
+
+const getNumberByKeys = (value: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate
+    }
+
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      const parsed = Number(candidate)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+  }
+
+  return undefined
+}
+
+const buildVideoPreviewSrc = (videoId: string) => {
+  return `${API_BASE}/static/videos/${encodeURIComponent(videoId)}`
+}
+
+const resolvePreviewSrc = (value: Record<string, unknown>) => {
+  const candidate = getStringByKeys(value, [
+    'previewSrc',
+    'preview',
+    'previewUrl',
+    'url',
+    'videoUrl',
+    'video_url',
+    'src',
+    'path'
+  ])
+
+  if (!candidate) {
+    const videoId = getStringByKeys(value, ['id', 'videoId', 'video_id', 'name', 'filename', 'fileName'])
+    return videoId ? buildVideoPreviewSrc(videoId) : ''
+  }
+
+  if (/^(blob:|data:|https?:\/\/)/.test(candidate)) {
+    return candidate
+  }
+
+  if (candidate.startsWith('/')) {
+    return `${API_BASE}${candidate}`
+  }
+
+  return `${API_BASE}/${candidate.replace(/^\.?\//, '')}`
+}
+
+const normalizeLibraryMediaItem = (value: unknown): DetectionMediaItem | null => {
+  if (typeof value === 'string') {
+    return {
+      id: value,
+      name: value,
+      kind: 'video',
+      previewSrc: buildVideoPreviewSrc(value),
+      source: 'library'
+    }
+  }
+
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const name = getStringByKeys(value, ['name', 'title', 'filename', 'fileName']) || '未命名视频'
+  const id = getStringByKeys(value, ['id', 'videoId', 'video_id']) || name
+  const fps = getNumberByKeys(value, ['fps', 'frameRate', 'frame_rate'])
+
+  return {
+    id,
+    name,
+    kind: 'video',
+    previewSrc: resolvePreviewSrc({ ...value, id, name }),
+    source: 'library',
+    raw: value,
+    fps
+  }
+}
+
+const normalizeUploadedMediaItem = (responseData: unknown, file: File, previewSrc: string) => {
+  if (typeof responseData === 'string' || typeof responseData === 'number') {
+    return {
+      id: String(responseData),
+      name: file.name,
+      kind: 'video' as const,
+      previewSrc,
+      source: 'upload' as const
+    }
+  }
+
+  if (isRecord(responseData)) {
+    const name = getStringByKeys(responseData, ['name', 'title', 'filename', 'fileName']) || file.name
+    const id = getStringByKeys(responseData, ['id', 'videoId', 'video_id']) || name
+    const remotePreviewSrc = resolvePreviewSrc({ ...responseData, id, name })
+
+    return {
+      id,
+      name,
+      kind: 'video' as const,
+      previewSrc: previewSrc || remotePreviewSrc,
+      source: 'upload' as const,
+      raw: responseData,
+      fps: getNumberByKeys(responseData, ['fps', 'frameRate', 'frame_rate'])
+    }
+  }
+
+  return {
+    id: file.name,
+    name: file.name,
+    kind: 'video' as const,
+    previewSrc,
+    source: 'upload' as const
+  }
+}
+
+const upsertMediaItem = (nextMedia: DetectionMediaItem) => {
+  mediaList.value = [nextMedia, ...mediaList.value.filter((item) => item.id !== nextMedia.id)]
+}
+
+const revokeLocalPreview = () => {
+  if (localPreviewUrl.value) {
+    URL.revokeObjectURL(localPreviewUrl.value)
+    localPreviewUrl.value = null
+  }
+}
+
+const clearSelectedTarget = () => {
+  selectedBox.value = null
+  selectedBoxKey.value = null
+}
 
 const openConfigDrawer = () => {
   configDrawerVisible.value = true
@@ -83,27 +256,112 @@ const closeResultsDrawer = () => {
   resultsDrawerVisible.value = false
 }
 
-const openVideoSelector = async () => {
+const setCurrentMediaSession = (media: DetectionMediaItem) => {
+  if (localPreviewUrl.value && media.previewSrc !== localPreviewUrl.value) {
+    revokeLocalPreview()
+  }
+
+  currentMedia.value = media
+  selectedMediaId.value = media.id
+  currentPlaybackTime.value = 0
+  fallbackPlaybackFrameIndex.value = 0
+  mediaLoaded.value = false
+  pendingAutoStart.value = false
+  clearSelectedTarget()
+  resultsDrawerVisible.value = false
+  resetSession()
+}
+
+const startDetectionForCurrentMedia = ({ forceImmediate = false, silent = false } = {}) => {
+  const media = currentMedia.value
+
+  if (!media) {
+    if (!silent) {
+      ElMessage.warning('请先选择视频')
+    }
+    return false
+  }
+
+  if (!media.id) {
+    if (!silent) {
+      ElMessage.warning('当前视频还没有可用的后端标识，暂时无法开始检测')
+    }
+    return false
+  }
+
+  if (!forceImmediate && !mediaLoaded.value) {
+    pendingAutoStart.value = true
+    if (!silent) {
+      ElMessage.info('视频还在加载，加载完成后会自动开始检测')
+    }
+    return false
+  }
+
+  resetSession()
+  const controller = connect(media.id)
+  if (!controller) {
+    return false
+  }
+
+  pendingAutoStart.value = false
+  mediaListDialogVisible.value = false
+
+  if (!silent) {
+    ElMessage.success('检测任务已启动')
+  }
+
+  return true
+}
+
+const openMediaSelector = async () => {
   try {
     const res = await axios.get(`${API_BASE}/api/list/video`)
+    const nextMediaList = Array.isArray(res.data?.data)
+      ? res.data.data
+          .map(normalizeLibraryMediaItem)
+          .filter((item: DetectionMediaItem | null): item is DetectionMediaItem => item !== null)
+      : []
 
-    if (res.data) {
-      videoList.value = Array.isArray(res.data.data) ? res.data.data : []
-      videoListDialogVisible.value = true
+    mediaList.value = nextMediaList
+    if (!selectedMediaId.value && nextMediaList.length > 0) {
+      selectedMediaId.value = nextMediaList[0].id
     }
+
+    mediaListDialogVisible.value = true
   } catch (error) {
     console.error('获取视频列表失败:', error)
     ElMessage.error('获取视频列表失败')
   }
 }
 
-const handleVideoChange = async (uploadFile: UploadFile) => {
+const handleMediaChange = async (uploadFile: UploadFile) => {
   if (!uploadFile.raw) {
     return
   }
 
+  const rawFile = uploadFile.raw as File
+  const detectedKind = getMediaKindFromMime(rawFile.type)
+  if (detectedKind !== 'video') {
+    ElMessage.warning('当前仅支持视频检测，请上传视频文件')
+    return
+  }
+
+  revokeLocalPreview()
+  const previewSrc = URL.createObjectURL(rawFile)
+  localPreviewUrl.value = previewSrc
+
+  setCurrentMediaSession({
+    id: '',
+    name: rawFile.name,
+    kind: 'video',
+    previewSrc,
+    source: 'upload'
+  })
+
+  ElMessage.success('视频预览已载入，正在上传到本地服务器')
+
   const formData = new FormData()
-  formData.append('file', uploadFile.raw)
+  formData.append('file', rawFile)
 
   try {
     const res = await axios.post(`${API_BASE}/api/upload/video`, formData, {
@@ -112,8 +370,16 @@ const handleVideoChange = async (uploadFile: UploadFile) => {
       }
     })
 
-    if (res.data?.data) {
-      ElMessage.success('上传至本地服务器成功')
+    const uploadedMedia = normalizeUploadedMediaItem(res.data?.data, rawFile, previewSrc)
+    currentMedia.value = uploadedMedia
+    selectedMediaId.value = uploadedMedia.id
+    upsertMediaItem(uploadedMedia)
+
+    if (mediaLoaded.value) {
+      startDetectionForCurrentMedia({ forceImmediate: true })
+    } else {
+      pendingAutoStart.value = true
+      ElMessage.success('上传成功，视频加载完成后将自动开始检测')
     }
   } catch (error) {
     console.error('上传失败:', error)
@@ -121,23 +387,32 @@ const handleVideoChange = async (uploadFile: UploadFile) => {
   }
 }
 
-const startBackendInference = (videoId?: string) => {
-  const targetVideoId = videoId ?? selectedVideoId.value
+const handleStartCurrentDetection = () => {
+  if (!currentMedia.value) {
+    openMediaSelector()
+    return
+  }
 
-  if (!targetVideoId) {
+  startDetectionForCurrentMedia()
+}
+
+const handleStartInferenceFromLibrary = (mediaId?: string) => {
+  const targetMediaId = mediaId ?? selectedMediaId.value
+  const targetMedia = mediaList.value.find((item) => item.id === targetMediaId)
+
+  if (!targetMedia) {
     ElMessage.warning('请先选择一个视频')
     return
   }
 
-  selectedVideoId.value = targetVideoId
-
-  if (connect(targetVideoId)) {
-    videoListDialogVisible.value = false
-  }
+  setCurrentMediaSession(targetMedia)
+  pendingAutoStart.value = true
+  mediaListDialogVisible.value = false
+  ElMessage.success('视频已载入，画面准备完成后将自动开始检测')
 }
 
 const pauseDetection = () => {
-  if (wsStatus.value === 'connected' || isDetecting.value) {
+  if (sseStatus.value === 'connected' || sseStatus.value === 'connecting' || isDetecting.value) {
     disconnect()
     ElMessage.info('已暂停识别')
     return
@@ -150,8 +425,50 @@ const handleDbConnect = () => {
   ElMessage.success(`正在连接到 ${dbForm.value.type} 数据库...`)
 }
 
-const handleTableExpandChange = (_row: TrafficTableRow, expandedRows: TrafficTableRow[]) => {
-  setPaused(expandedRows.length > 0)
+const handleMediaLoaded = (_payload: MediaLoadedPayload) => {
+  mediaLoaded.value = true
+
+  if (pendingAutoStart.value) {
+    const started = startDetectionForCurrentMedia({ forceImmediate: true, silent: true })
+    if (started) {
+      ElMessage.success('视频加载完成，已自动开始检测')
+    }
+  }
+}
+
+const handleFrameChange = (payload: { currentTime: number; frameIndex: number }) => {
+  currentPlaybackTime.value = payload.currentTime
+  fallbackPlaybackFrameIndex.value = payload.frameIndex
+}
+
+const handleBoxSelect = (box: DetectionBox | null) => {
+  if (!box) {
+    return
+  }
+
+  const matchedIndex = displayedBoxes.value.findIndex((item) => {
+    const itemIdentity = item.objectId ?? item.trackId ?? item.id
+    const boxIdentity = box.objectId ?? box.trackId ?? box.id
+
+    if (itemIdentity !== undefined && boxIdentity !== undefined) {
+      return String(itemIdentity) === String(boxIdentity)
+    }
+
+    return (
+      item.x === box.x &&
+      item.y === box.y &&
+      item.width === box.width &&
+      item.height === box.height &&
+      item.type === box.type &&
+      (item.frameIndex ?? currentFrameIndex.value) === (box.frameIndex ?? currentFrameIndex.value)
+    )
+  })
+
+  selectedBoxKey.value = matchedIndex >= 0
+    ? getDetectionBoxKey(displayedBoxes.value[matchedIndex], matchedIndex)
+    : getDetectionBoxKey(box)
+  selectedBox.value = { ...box }
+  resultsDrawerVisible.value = true
 }
 
 const handleDrawerVisibleUpdate = (value: boolean) => {
@@ -159,16 +476,35 @@ const handleDrawerVisibleUpdate = (value: boolean) => {
 }
 
 const handleDialogVisibleUpdate = (value: boolean) => {
-  videoListDialogVisible.value = value
+  mediaListDialogVisible.value = value
 }
 
-const handleSelectedVideoIdUpdate = (value: string) => {
-  selectedVideoId.value = value
+const handleSelectedMediaIdUpdate = (value: string) => {
+  selectedMediaId.value = value
 }
 
 const handleDbFormUpdate = (value: DbFormState) => {
   dbForm.value = value
 }
+
+watch(
+  displayedBoxes,
+  (nextBoxes) => {
+    if (!selectedBoxKey.value) {
+      return
+    }
+
+    const match = nextBoxes.find((box, index) => getDetectionBoxKey(box, index) === selectedBoxKey.value)
+    if (match) {
+      selectedBox.value = { ...match }
+    }
+  },
+  { deep: true }
+)
+
+onUnmounted(() => {
+  revokeLocalPreview()
+})
 </script>
 
 <template>
@@ -181,20 +517,35 @@ const handleDbFormUpdate = (value: DbFormState) => {
       <el-main class="main-content">
         <div class="top-section">
           <div class="left-column">
-            <VideoMonitor :latest-frame-src="latestFrameSrc" :boxes="boxes" />
+            <VideoMonitor
+              :media-kind="effectiveMediaKind"
+              :media-src="currentMediaSrc"
+              :fallback-frame-src="''"
+              :boxes="displayedBoxes"
+              :selected-box-key="selectedBoxKey"
+              :frame-rate="activeFrameRate"
+              :current-frame-index="currentFrameIndex"
+              :media-label="currentMediaLabel"
+              @media-loaded="handleMediaLoaded"
+              @frame-change="handleFrameChange"
+              @box-click="handleBoxSelect"
+            />
           </div>
 
           <div class="analysis-column">
             <div class="upper-row">
               <div class="pie-column">
-                <TrafficCharts variant="pie" :boxes="boxes" />
+                <TrafficCharts variant="pie" :boxes="displayedBoxes" />
               </div>
 
               <div class="control-column">
                 <ControlConsole
                   :model-status="modelStatus"
-                  @upload="handleVideoChange"
-                  @start="openVideoSelector"
+                  :connection-status="sseStatus"
+                  :current-media-label="currentMediaLabel"
+                  @upload="handleMediaChange"
+                  @library="openMediaSelector"
+                  @start="handleStartCurrentDetection"
                   @pause="pauseDetection"
                   @config="openConfigDrawer"
                   @view-results="openResultsDrawer"
@@ -203,7 +554,7 @@ const handleDbFormUpdate = (value: DbFormState) => {
             </div>
 
             <div class="lower-row">
-              <TrafficCharts variant="line" :boxes="boxes" />
+              <TrafficCharts variant="line" :boxes="displayedBoxes" />
             </div>
           </div>
         </div>
@@ -220,10 +571,12 @@ const handleDbFormUpdate = (value: DbFormState) => {
     >
       <div class="drawer-content table-drawer-content">
         <DetectionTable
-          :table-data="tableData"
-          :is-table-paused="isTablePaused"
+          :boxes="displayedBoxes"
+          :selected-box="selectedBox"
+          :selected-box-key="selectedBoxKey"
+          :current-frame-index="currentFrameIndex"
           :show-close-button="true"
-          @expand-change="handleTableExpandChange"
+          @select-box="handleBoxSelect"
           @close="closeResultsDrawer"
         />
       </div>
@@ -231,17 +584,17 @@ const handleDbFormUpdate = (value: DbFormState) => {
 
     <ConfigDrawers
       :drawer-visible="configDrawerVisible"
-      :dialog-visible="videoListDialogVisible"
+      :dialog-visible="mediaListDialogVisible"
       :model-status="modelStatus"
-      :video-list="videoList"
+      :media-list="mediaList"
       :db-form="dbForm"
-      :selected-video-id="selectedVideoId"
+      :selected-media-id="selectedMediaId"
       @update:drawer-visible="handleDrawerVisibleUpdate"
       @update:dialog-visible="handleDialogVisibleUpdate"
-      @update:selected-video-id="handleSelectedVideoIdUpdate"
+      @update:selected-media-id="handleSelectedMediaIdUpdate"
       @update:db-form="handleDbFormUpdate"
       @connect-db="handleDbConnect"
-      @start-inference="startBackendInference"
+      @start-inference="handleStartInferenceFromLibrary"
     />
   </div>
 </template>
@@ -334,9 +687,9 @@ const handleDbFormUpdate = (value: DbFormState) => {
 }
 
 .upper-row {
-  flex: 1.0;
+  flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.20fr);
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr);
   gap: 15px;
   width: 100%;
 }
@@ -362,15 +715,10 @@ const handleDbFormUpdate = (value: DbFormState) => {
   width: 100%;
   min-width: 0;
   max-width: none;
-  margin: 0 !important; 
+  margin: 0 !important;
 }
 
-.pie-column > *{
-  width: 100%;
-  min-width: 0;
-  max-width: none;
-}
-
+.pie-column > *,
 .control-column > * {
   width: 100%;
   min-width: 0;
@@ -394,3 +742,5 @@ const handleDbFormUpdate = (value: DbFormState) => {
   min-height: 0;
 }
 </style>
+
+

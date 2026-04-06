@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { VideoCamera } from '@element-plus/icons-vue'
-import type { DetectionBox } from '../../composables/useDetectionWS'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { PictureFilled, VideoCamera } from '@element-plus/icons-vue'
+import type {
+  DetectionBox,
+  MediaFramePayload,
+  MediaKind,
+  MediaLoadedPayload
+} from '../../types/detection'
+import { getDetectionBoxKey } from '../../types/detection'
 
 interface RenderMetrics {
   renderWidth: number
@@ -12,13 +18,40 @@ interface RenderMetrics {
   originalHeight: number
 }
 
+interface RenderedBoxMetrics {
+  key: string
+  box: DetectionBox
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 const props = withDefaults(defineProps<{
-  latestFrameSrc?: string
+  mediaKind?: MediaKind
+  mediaSrc?: string
+  fallbackFrameSrc?: string
   boxes?: DetectionBox[]
+  selectedBoxKey?: string | null
+  frameRate?: number
+  currentFrameIndex?: number | null
+  mediaLabel?: string
 }>(), {
-  latestFrameSrc: '',
-  boxes: () => []
+  mediaKind: 'unknown',
+  mediaSrc: '',
+  fallbackFrameSrc: '',
+  boxes: () => [],
+  selectedBoxKey: null,
+  frameRate: 25,
+  currentFrameIndex: null,
+  mediaLabel: '未选择媒体'
 })
+
+const emit = defineEmits<{
+  (e: 'media-loaded', payload: MediaLoadedPayload): void
+  (e: 'frame-change', payload: MediaFramePayload): void
+  (e: 'box-click', payload: DetectionBox | null): void
+}>()
 
 const COLOR_MAP: Record<string, string> = {
   汽车: '#2EABFF',
@@ -30,12 +63,59 @@ const COLOR_MAP: Record<string, string> = {
   骑电动车的人: '#FFA270'
 }
 
-const videoContainerRef = ref<HTMLDivElement | null>(null)
+const monitorRef = ref<HTMLDivElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const imageRef = ref<HTMLImageElement | null>(null)
+const videoRef = ref<HTMLVideoElement | null>(null)
+const renderedBoxes = ref<RenderedBoxMetrics[]>([])
 
 let resizeObserver: ResizeObserver | null = null
-let loadedImage: HTMLImageElement | null = null
-let currentImageToken = 0
+let frameLoopId: number | null = null
+let lastLoadedMediaKey = ''
+
+const displayMode = computed<'video' | 'image' | 'stream' | 'empty'>(() => {
+  if (props.mediaKind === 'video' && props.mediaSrc) {
+    return 'video'
+  }
+
+  if (props.mediaSrc) {
+    return 'image'
+  }
+
+  if (props.fallbackFrameSrc) {
+    return 'stream'
+  }
+
+  return 'empty'
+})
+
+const activeImageSrc = computed(() => {
+  if (displayMode.value === 'image') {
+    return props.mediaSrc
+  }
+
+  if (displayMode.value === 'stream') {
+    return props.fallbackFrameSrc
+  }
+
+  return ''
+})
+
+const mediaModeLabel = computed(() => {
+  if (displayMode.value === 'video') {
+    return '视频预览'
+  }
+
+  if (displayMode.value === 'image') {
+    return '图片预览'
+  }
+
+  if (displayMode.value === 'stream') {
+    return '识别结果画面'
+  }
+
+  return '等待媒体'
+})
 
 const getCanvasContext = () => {
   return canvasRef.value?.getContext('2d') ?? null
@@ -50,33 +130,58 @@ const clearCanvas = () => {
   }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+  renderedBoxes.value = []
 }
 
-const getRenderMetrics = (image: HTMLImageElement): RenderMetrics | null => {
+const getIntrinsicSize = () => {
+  if (displayMode.value === 'video') {
+    const video = videoRef.value
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      return null
+    }
+
+    return {
+      width: video.videoWidth,
+      height: video.videoHeight
+    }
+  }
+
+  const image = imageRef.value
+  if (!image || image.naturalWidth === 0 || image.naturalHeight === 0) {
+    return null
+  }
+
+  return {
+    width: image.naturalWidth,
+    height: image.naturalHeight
+  }
+}
+
+const getRenderMetrics = (): RenderMetrics | null => {
   const canvas = canvasRef.value
-  if (!canvas || canvas.width === 0 || canvas.height === 0) {
+  const intrinsicSize = getIntrinsicSize()
+
+  if (!canvas || !intrinsicSize || canvas.width === 0 || canvas.height === 0) {
     return null
   }
 
   const canvasWidth = canvas.width
   const canvasHeight = canvas.height
-  const originalWidth = image.width
-  const originalHeight = image.height
   const containerRatio = canvasWidth / canvasHeight
-  const videoRatio = originalWidth / originalHeight
+  const mediaRatio = intrinsicSize.width / intrinsicSize.height
 
   let renderWidth = canvasWidth
   let renderHeight = canvasHeight
   let offsetX = 0
   let offsetY = 0
 
-  if (containerRatio > videoRatio) {
+  if (containerRatio > mediaRatio) {
     renderHeight = canvasHeight
-    renderWidth = renderHeight * videoRatio
+    renderWidth = renderHeight * mediaRatio
     offsetX = (canvasWidth - renderWidth) / 2
   } else {
     renderWidth = canvasWidth
-    renderHeight = renderWidth / videoRatio
+    renderHeight = renderWidth / mediaRatio
     offsetY = (canvasHeight - renderHeight) / 2
   }
 
@@ -85,139 +190,235 @@ const getRenderMetrics = (image: HTMLImageElement): RenderMetrics | null => {
     renderHeight,
     offsetX,
     offsetY,
-    originalWidth,
-    originalHeight
+    originalWidth: intrinsicSize.width,
+    originalHeight: intrinsicSize.height
   }
 }
 
 const drawBoxes = (ctx: CanvasRenderingContext2D, metrics: RenderMetrics) => {
   const scaleX = metrics.renderWidth / metrics.originalWidth
   const scaleY = metrics.renderHeight / metrics.originalHeight
+  const nextRenderedBoxes: RenderedBoxMetrics[] = []
 
-  props.boxes.forEach((box) => {
+  props.boxes.forEach((box, index) => {
     const x = box.x * scaleX + metrics.offsetX
     const y = box.y * scaleY + metrics.offsetY
     const width = box.width * scaleX
     const height = box.height * scaleY
     const color = COLOR_MAP[box.type] || '#00d2ff'
+    const boxKey = getDetectionBoxKey(box, index)
+    const isSelected = props.selectedBoxKey === boxKey
+    const labelText = box.confidence !== undefined
+      ? `${box.type} ${(box.confidence * 100).toFixed(1)}%`
+      : box.type
 
     ctx.beginPath()
-    ctx.lineWidth = 1.5
+    ctx.lineWidth = isSelected ? 2.6 : 1.8
     ctx.strokeStyle = color
+    ctx.shadowColor = color
+    ctx.shadowBlur = isSelected ? 14 : 8
     ctx.rect(x, y, width, height)
     ctx.stroke()
+    ctx.shadowBlur = 0
 
-    const label = `${box.type}`
-    ctx.font = '10px Arial'
-    const textWidth = ctx.measureText(label).width
+    const labelPaddingX = 8
+    const labelHeight = 18
+    ctx.font = '12px Microsoft YaHei'
+    const textWidth = ctx.measureText(labelText).width
+    const labelWidth = textWidth + labelPaddingX * 2
+    const labelX = x
+    const labelY = Math.max(0, y - labelHeight - 2)
 
     ctx.fillStyle = color
-    ctx.globalAlpha = 0.85
-    ctx.fillRect(x, y - 16, textWidth + 8, 16)
+    ctx.globalAlpha = isSelected ? 0.95 : 0.82
+    ctx.fillRect(labelX, labelY, labelWidth, labelHeight)
     ctx.globalAlpha = 1
 
-    ctx.fillStyle = '#000000'
-    ctx.fillText(label, x + 4, y - 4)
+    ctx.fillStyle = '#031018'
+    ctx.fillText(labelText, labelX + labelPaddingX, labelY + 13)
+
+    nextRenderedBoxes.push({
+      key: boxKey,
+      box,
+      x,
+      y,
+      width,
+      height
+    })
   })
+
+  renderedBoxes.value = nextRenderedBoxes
 }
 
-const renderFrame = () => {
+const renderOverlay = () => {
   const ctx = getCanvasContext()
   const canvas = canvasRef.value
-
   if (!ctx || !canvas) {
     return
   }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  if (!loadedImage) {
-    return
-  }
-
-  const metrics = getRenderMetrics(loadedImage)
+  const metrics = getRenderMetrics()
   if (!metrics) {
+    renderedBoxes.value = []
     return
   }
-
-  ctx.drawImage(
-    loadedImage,
-    metrics.offsetX,
-    metrics.offsetY,
-    metrics.renderWidth,
-    metrics.renderHeight
-  )
 
   drawBoxes(ctx, metrics)
 }
 
 const resizeCanvas = () => {
-  if (!videoContainerRef.value || !canvasRef.value) {
+  if (!monitorRef.value || !canvasRef.value) {
     return
   }
 
-  canvasRef.value.width = videoContainerRef.value.clientWidth
-  canvasRef.value.height = videoContainerRef.value.clientHeight
-  renderFrame()
+  canvasRef.value.width = monitorRef.value.clientWidth
+  canvasRef.value.height = monitorRef.value.clientHeight
+  renderOverlay()
 }
 
-const loadFrame = (src: string) => {
-  if (!src) {
-    loadedImage = null
-    clearCanvas()
+const syncVideoFrame = () => {
+  const video = videoRef.value
+  if (!video) {
     return
   }
 
-  const imageToken = ++currentImageToken
-  const image = new Image()
+  const nextFrameIndex = Math.max(0, Math.floor(video.currentTime * props.frameRate))
+  emit('frame-change', {
+    currentTime: video.currentTime,
+    frameIndex: nextFrameIndex
+  })
 
-  image.onload = () => {
-    if (imageToken !== currentImageToken) {
-      return
-    }
-
-    loadedImage = image
-    renderFrame()
-  }
-
-  image.onerror = () => {
-    if (imageToken !== currentImageToken) {
-      return
-    }
-
-    loadedImage = null
-    clearCanvas()
-  }
-
-  image.src = src
+  renderOverlay()
 }
 
-watch(
-  () => props.latestFrameSrc,
-  (nextFrameSrc) => {
-    loadFrame(nextFrameSrc)
-  },
-  { immediate: true }
-)
+const stopFrameLoop = () => {
+  if (frameLoopId !== null) {
+    cancelAnimationFrame(frameLoopId)
+    frameLoopId = null
+  }
+}
+
+const startFrameLoop = () => {
+  if (frameLoopId !== null) {
+    return
+  }
+
+  const loop = () => {
+    syncVideoFrame()
+
+    if (videoRef.value && !videoRef.value.paused && !videoRef.value.ended) {
+      frameLoopId = requestAnimationFrame(loop)
+      return
+    }
+
+    frameLoopId = null
+  }
+
+  frameLoopId = requestAnimationFrame(loop)
+}
+
+const handleImageLoad = () => {
+  renderOverlay()
+
+  if (displayMode.value === 'stream') {
+    return
+  }
+
+  const image = imageRef.value
+  if (!image) {
+    return
+  }
+
+  const mediaKey = `${displayMode.value}:${props.mediaSrc}`
+  if (mediaKey === lastLoadedMediaKey) {
+    return
+  }
+
+  lastLoadedMediaKey = mediaKey
+  emit('media-loaded', {
+    kind: 'image',
+    width: image.naturalWidth,
+    height: image.naturalHeight
+  })
+}
+
+const handleVideoLoaded = () => {
+  const video = videoRef.value
+  if (!video) {
+    return
+  }
+
+  renderOverlay()
+
+  const mediaKey = `video:${props.mediaSrc}`
+  if (mediaKey !== lastLoadedMediaKey) {
+    lastLoadedMediaKey = mediaKey
+    emit('media-loaded', {
+      kind: 'video',
+      width: video.videoWidth,
+      height: video.videoHeight,
+      duration: Number.isFinite(video.duration) ? video.duration : undefined
+    })
+  }
+
+  syncVideoFrame()
+  startFrameLoop()
+}
+
+const handleCanvasClick = (event: MouseEvent) => {
+  const canvas = canvasRef.value
+  if (!canvas) {
+    return
+  }
+
+  const rect = canvas.getBoundingClientRect()
+  const clickX = event.clientX - rect.left
+  const clickY = event.clientY - rect.top
+
+  const hit = [...renderedBoxes.value].reverse().find((item) => {
+    return clickX >= item.x && clickX <= item.x + item.width && clickY >= item.y && clickY <= item.y + item.height
+  })
+
+  emit('box-click', hit?.box ?? null)
+}
 
 watch(
   () => props.boxes,
   () => {
-    renderFrame()
+    renderOverlay()
   },
   { deep: true }
+)
+
+watch(
+  () => props.selectedBoxKey,
+  () => {
+    renderOverlay()
+  }
+)
+
+watch(
+  () => [props.mediaSrc, props.fallbackFrameSrc, props.mediaKind],
+  () => {
+    lastLoadedMediaKey = ''
+    stopFrameLoop()
+    window.requestAnimationFrame(resizeCanvas)
+  }
 )
 
 onMounted(() => {
   resizeCanvas()
 
-  if (videoContainerRef.value) {
+  if (monitorRef.value) {
     resizeObserver = new ResizeObserver(resizeCanvas)
-    resizeObserver.observe(videoContainerRef.value)
+    resizeObserver.observe(monitorRef.value)
   }
 })
 
 onUnmounted(() => {
+  stopFrameLoop()
   resizeObserver?.disconnect()
 })
 </script>
@@ -233,8 +434,55 @@ onUnmounted(() => {
       </div>
     </template>
 
-    <div ref="videoContainerRef" class="video-container">
-      <canvas ref="canvasRef" class="tech-canvas"></canvas>
+    <div ref="monitorRef" class="video-container">
+      <video
+        v-if="displayMode === 'video'"
+        ref="videoRef"
+        class="media-layer"
+        :src="mediaSrc"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="auto"
+        @loadeddata="handleVideoLoaded"
+        @play="startFrameLoop"
+        @pause="stopFrameLoop"
+        @seeked="syncVideoFrame"
+        @timeupdate="syncVideoFrame"
+      ></video>
+
+      <img
+        v-else-if="displayMode === 'image' || displayMode === 'stream'"
+        ref="imageRef"
+        class="media-layer"
+        :src="activeImageSrc"
+        alt="监控画面"
+        @load="handleImageLoad"
+      />
+
+      <div v-else class="empty-state">
+        <el-icon class="empty-icon">
+          <PictureFilled />
+        </el-icon>
+        <div class="empty-title">等待媒体接入</div>
+      </div>
+
+      <canvas
+        ref="canvasRef"
+        :class="['overlay-canvas', { interactive: boxes.length > 0 }]"
+        @click="handleCanvasClick"
+      ></canvas>
+
+      <div class="media-badge">
+        <span class="badge-label">{{ mediaModeLabel }}</span>
+        <span class="badge-value">{{ mediaLabel }}</span>
+      </div>
+
+      <div v-if="currentFrameIndex !== null && displayMode === 'video'" class="frame-badge">
+        当前帧 {{ currentFrameIndex }}
+      </div>
+
       <div class="scan-line"></div>
     </div>
   </el-card>
@@ -315,7 +563,9 @@ onUnmounted(() => {
 .video-container {
   flex: 1;
   position: relative;
-  background: rgba(0, 5, 15, 0.6);
+  background:
+    radial-gradient(circle at top, rgba(0, 110, 180, 0.16), transparent 48%),
+    rgba(0, 5, 15, 0.75);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -324,13 +574,107 @@ onUnmounted(() => {
   border-bottom-right-radius: 8px;
 }
 
-.tech-canvas {
+.media-layer {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+}
+
+.overlay-canvas {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+}
+
+.overlay-canvas.interactive {
+  cursor: crosshair;
+}
+
+.media-badge,
+.frame-badge {
+  position: absolute;
+  z-index: 8;
+  padding: 8px 12px;
+  border: 1px solid rgba(0, 210, 255, 0.35);
+  background: rgba(2, 18, 35, 0.72);
+  box-shadow: 0 0 14px rgba(0, 210, 255, 0.14);
+  backdrop-filter: blur(8px);
+  color: #9fe7ff;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+}
+
+.media-badge {
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: calc(100% - 28px);
+}
+
+.frame-badge {
+  top: 16px;
+  right: 14px;
+  color: #00ffff;
+  text-shadow: 0 0 6px rgba(0, 255, 255, 0.5);
+}
+
+.badge-label {
+  color: #00d2ff;
+}
+
+.badge-value {
+  color: #e6fbff;
+  font-weight: bold;
+  text-shadow: 0 0 6px rgba(0, 210, 255, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-state {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  pointer-events: none;
-  z-index: 5;
+  width: min(340px, calc(100% - 40px));
+  padding: 28px 24px;
+  border: 1px solid rgba(0, 210, 255, 0.22);
+  background: rgba(3, 20, 38, 0.58);
+  backdrop-filter: blur(10px);
+  text-align: center;
+  color: #c9f6ff;
+  z-index: 4;
+}
+
+.empty-icon {
+  font-size: 34px;
+  color: #00d2ff;
+  margin-bottom: 10px;
+}
+
+.empty-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #00ffff;
+  text-shadow: 0 0 8px rgba(0, 255, 255, 0.45);
+  margin-bottom: 8px;
+}
+
+.empty-text {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #95dfff;
 }
 
 .scan-line {
@@ -343,8 +687,8 @@ onUnmounted(() => {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 255, 255, 0.05) 3px,
-    rgba(0, 255, 255, 0.05) 4px
+    rgba(0, 255, 255, 0.04) 3px,
+    rgba(0, 255, 255, 0.04) 4px
   );
   pointer-events: none;
   z-index: 2;
