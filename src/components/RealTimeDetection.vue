@@ -59,6 +59,7 @@ const resultsDrawerVisible = ref(false)
 const mediaList = ref<DetectionMediaItem[]>([])
 const selectedMediaId = ref('')
 const currentMedia = ref<DetectionMediaItem | null>(null)
+const detectionResultMediaId = ref<string | null>(null)
 const fallbackPlaybackFrameIndex = ref(0)
 const mediaLoaded = ref(false)
 const pendingAutoStart = ref(false)
@@ -257,21 +258,37 @@ const closeResultsDrawer = () => {
 }
 
 const setCurrentMediaSession = (media: DetectionMediaItem) => {
+  const isSameMedia = currentMedia.value?.id === media.id && media.id !== ''
+
   if (localPreviewUrl.value && media.previewSrc !== localPreviewUrl.value) {
     revokeLocalPreview()
   }
 
   currentMedia.value = media
   selectedMediaId.value = media.id
+  pendingAutoStart.value = false
+
+  if (isSameMedia) {
+    return
+  }
+
   fallbackPlaybackFrameIndex.value = 0
   mediaLoaded.value = false
-  pendingAutoStart.value = false
   clearSelectedTarget()
   resultsDrawerVisible.value = false
+  detectionResultMediaId.value = null
   resetSession()
 }
 
-const startDetectionForCurrentMedia = ({ forceImmediate = false, silent = false } = {}) => {
+const startDetectionForCurrentMedia = ({
+  forceImmediate = false,
+  silent = false,
+  preserveExistingResults
+}: {
+  forceImmediate?: boolean
+  silent?: boolean
+  preserveExistingResults?: boolean
+} = {}) => {
   const media = currentMedia.value
 
   if (!media) {
@@ -296,12 +313,15 @@ const startDetectionForCurrentMedia = ({ forceImmediate = false, silent = false 
     return false
   }
 
-  resetSession()
-  const controller = connect(media.id)
+  const shouldPreserveResults = preserveExistingResults ?? (detectionResultMediaId.value === media.id)
+  const controller = connect(media.id, {
+    preserveResults: shouldPreserveResults
+  })
   if (!controller) {
     return false
   }
 
+  detectionResultMediaId.value = media.id
   pendingAutoStart.value = false
   mediaListDialogVisible.value = false
 
@@ -404,9 +424,22 @@ const handleStartInferenceFromLibrary = (mediaId?: string) => {
     return
   }
 
+  const isSameMedia = currentMedia.value?.id === targetMedia.id
   setCurrentMediaSession(targetMedia)
-  pendingAutoStart.value = true
   mediaListDialogVisible.value = false
+
+  const started = startDetectionForCurrentMedia({
+    forceImmediate: true,
+    silent: true,
+    preserveExistingResults: isSameMedia
+  })
+
+  if (started) {
+    ElMessage.success(isSameMedia ? '已重新发起当前视频的检测任务' : '已切换视频并开始检测')
+    return
+  }
+
+  pendingAutoStart.value = true
   ElMessage.success('视频已载入，画面准备完成后将自动开始检测')
 }
 
@@ -740,3 +773,5 @@ onUnmounted(() => {
   min-height: 0;
 }
 </style>
+
+

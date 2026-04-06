@@ -2,7 +2,7 @@ import { onUnmounted, ref, shallowRef } from 'vue'
 import type { DetectionBox, DetectionFrameResult } from '../types/detection'
 
 const DEFAULT_SSE_BASE = 'http://127.0.0.1:8000'
-const DEFAULT_FRAME_CACHE_SIZE = 900
+const DEFAULT_FRAME_CACHE_SIZE = Number.POSITIVE_INFINITY
 const DEFAULT_MATCH_TOLERANCE_SECONDS = 0.12
 
 export type DetectionConnectionStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
@@ -24,6 +24,10 @@ export interface UseDetectionSSEOptions {
   onClose?: () => void
   onError?: (error: unknown) => void
   onParseError?: (error: unknown, rawMessage: string) => void
+}
+
+interface ConnectDetectionSSEOptions {
+  preserveResults?: boolean
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -200,6 +204,10 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
   }
 
   const trimFrameCache = (nextTimelineResults: DetectionFrameResult[]) => {
+    if (!Number.isFinite(maxFrameCache)) {
+      return nextTimelineResults
+    }
+
     if (nextTimelineResults.length <= maxFrameCache) {
       return nextTimelineResults
     }
@@ -243,13 +251,15 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     const nextMap = new Map(frameResults.value)
     nextMap.set(nextFrame.frameIndex, nextFrame)
 
-    while (nextMap.size > maxFrameCache) {
-      const oldestFrameIndex = nextMap.keys().next().value
-      if (oldestFrameIndex === undefined) {
-        break
-      }
+    if (Number.isFinite(maxFrameCache)) {
+      while (nextMap.size > maxFrameCache) {
+        const oldestFrameIndex = nextMap.keys().next().value
+        if (oldestFrameIndex === undefined) {
+          break
+        }
 
-      nextMap.delete(oldestFrameIndex)
+        nextMap.delete(oldestFrameIndex)
+      }
     }
 
     const filteredTimeline = previousTimeline.filter((item) => item.frameIndex !== nextFrame.frameIndex)
@@ -308,14 +318,18 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     return normalizedBuffer
   }
 
-  const connect = (videoId: string) => {
+  const connect = (videoId: string, options: ConnectDetectionSSEOptions = {}) => {
     if (!videoId) {
       connectionError.value = '未提供视频ID'
       return null
     }
 
+    const { preserveResults = false } = options
+
     disconnect()
-    clearResults()
+    if (!preserveResults) {
+      clearResults()
+    }
 
     const controller = new AbortController()
     abortController.value = controller
@@ -515,4 +529,5 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     getFrameResultForFrame
   }
 }
+
 
