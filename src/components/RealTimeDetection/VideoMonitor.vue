@@ -457,6 +457,7 @@ defineExpose({
         ref="videoRef"
         class="media-layer"
         :src="mediaSrc"
+        autoplay
         muted
         loop
         playsinline
