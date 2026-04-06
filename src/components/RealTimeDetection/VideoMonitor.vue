@@ -278,13 +278,25 @@ const resizeCanvas = () => {
   renderOverlay()
 }
 
+const resolveVideoFrameIndex = (video: HTMLVideoElement) => {
+  const safeFrameRate = props.frameRate > 0 ? props.frameRate : 30
+  const rawFrameIndex = Math.floor(video.currentTime * safeFrameRate) + 1
+
+  if (Number.isFinite(video.duration) && video.duration > 0) {
+    const estimatedFrameCount = Math.max(1, Math.floor(video.duration * safeFrameRate))
+    return Math.min(estimatedFrameCount, Math.max(1, rawFrameIndex))
+  }
+
+  return Math.max(1, rawFrameIndex)
+}
+
 const syncVideoFrame = () => {
   const video = videoRef.value
   if (!video) {
     return
   }
 
-  const nextFrameIndex = Math.max(0, Math.floor(video.currentTime * props.frameRate))
+  const nextFrameIndex = resolveVideoFrameIndex(video)
   emit('frame-change', {
     currentTime: video.currentTime,
     frameIndex: nextFrameIndex
