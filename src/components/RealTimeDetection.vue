@@ -29,7 +29,7 @@ interface VideoMonitorExposed {
 }
 
 const API_BASE = 'http://127.0.0.1:8000'
-const BUFFER_START_THRESHOLD = 3.0
+const BUFFER_START_THRESHOLD = 15.0
 const BUFFER_STOP_THRESHOLD = 0.5
 const BUFFERING_STATUS = '正在缓冲'
 const DETECTING_STATUS = '正在识别'
@@ -49,17 +49,17 @@ const {
   getFrameResultForTime
 } = useDetectionSSE({
   onOpen: () => {
-    ElMessage.success('已连接到 SSE 推理通道')
+    ElMessage.success('已连接到推理通道')
   },
   onClose: () => {
     ElMessage.success('当前视频检测已完成')
   },
   onError: (error) => {
     console.error('SSE错误:', error)
-    ElMessage.error('SSE 推理连接发生错误')
+    ElMessage.error('推理连接发生错误')
   },
   onParseError: (error, rawMessage) => {
-    console.error('解析SSE数据失败:', error, rawMessage)
+    console.error('解析数据失败:', error, rawMessage)
   }
 })
 

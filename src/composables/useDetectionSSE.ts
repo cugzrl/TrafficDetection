@@ -336,11 +336,11 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
         })
 
         if (!response.ok) {
-          throw new Error(`SSE 请求失败: ${response.status}`)
+          throw new Error(`SSE请求失败: ${response.status}`)
         }
 
         if (!response.body) {
-          throw new Error('SSE 响应体为空')
+          throw new Error('SSE响应为空')
         }
 
         sseStatus.value = 'connected'
