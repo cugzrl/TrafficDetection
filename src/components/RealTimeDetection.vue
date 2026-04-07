@@ -11,7 +11,13 @@ import DetectionTable from './RealTimeDetection/DetectionTable.vue'
 import ConfigDrawers from './RealTimeDetection/ConfigDrawers.vue'
 import { useClock } from '../composables/useClock'
 import { useDetectionSSE } from '../composables/useDetectionSSE'
-import type { DetectionBox, DetectionFrameResult, DetectionMediaItem, MediaKind, MediaLoadedPayload } from '../types/detection'
+import type {
+  DetectionBox,
+  DetectionFrameResult,
+  DetectionMediaItem,
+  MediaKind,
+  MediaLoadedPayload
+} from '../types/detection'
 import { getDetectionBoxKey, getMediaKindFromMime } from '../types/detection'
 
 interface DbFormState {
@@ -29,10 +35,20 @@ interface VideoMonitorExposed {
   resetToStart: () => void
 }
 
+type VideoBufferState = 'none' | 'initial' | 'rebuffer'
+
+interface InferenceSpeedSample {
+  frameIndex: number
+  atMs: number
+}
+
 const API_BASE = 'http://127.0.0.1:8000'
-const INITIAL_BUFFER_SECONDS = 10
-const RESUME_BUFFER_SECONDS = 3
-const STOP_BUFFER_SECONDS = 0.5
+const STARTUP_MIN_SAMPLE_SECONDS = 0.75
+const STARTUP_SAFETY_SECONDS = 1.25
+const REBUFFER_STOP_SAFETY_SECONDS = 0.55
+const REBUFFER_RESUME_SAFETY_SECONDS = 1.4
+const INFERENCE_SPEED_BLEND_FACTOR = 0.35
+const INFERENCE_SPEED_SAMPLE_WEIGHT = 0.6
 
 const { currentTime } = useClock()
 
@@ -73,13 +89,18 @@ const currentMedia = ref<DetectionMediaItem | null>(null)
 const detectionResultMediaId = ref<string | null>(null)
 const fallbackPlaybackFrameIndex = ref(0)
 const mediaLoaded = ref(false)
+const currentMediaDuration = ref<number | null>(null)
 const pendingAutoStart = ref(false)
 const hasPlaybackStarted = ref(false)
 const isPlaybackBuffering = ref(false)
-const playbackBufferLabel = ref('正在缓冲检测结果')
+const playbackBufferLabel = ref('')
 const selectedBox = ref<DetectionBox | null>(null)
 const selectedBoxKey = ref<string | null>(null)
 const localPreviewUrl = ref<string | null>(null)
+const inferenceSessionStartedAt = ref<number | null>(null)
+const inferenceSessionBaseFrameIndex = ref(0)
+const lastInferenceSpeedSample = ref<InferenceSpeedSample | null>(null)
+const estimatedInferenceFps = ref<number | null>(null)
 const dbForm = ref<DbFormState>({
   type: 'MySQL',
   host: '',
@@ -90,13 +111,10 @@ const dbForm = ref<DbFormState>({
 })
 
 const currentMediaLabel = computed(() => currentMedia.value?.name ?? '未选择视频')
-//const activeFrameRate = computed(() => currentMedia.value?.fps ?? 30)
 const activeFrameRate = computed(() => currentMedia.value?.fps ?? latestKnownFps.value ?? 30)
-const initialBufferFrames = computed(() => Math.max(1, Math.ceil(activeFrameRate.value * INITIAL_BUFFER_SECONDS)))
-const resumeBufferFrames = computed(() => Math.max(1, Math.ceil(activeFrameRate.value * RESUME_BUFFER_SECONDS)))
-const stopBufferFrames = computed(() => Math.max(1, Math.ceil(activeFrameRate.value * STOP_BUFFER_SECONDS)))
 const effectiveMediaKind = computed<MediaKind>(() => currentMedia.value?.kind ?? 'unknown')
 const currentMediaSrc = computed(() => currentMedia.value?.previewSrc ?? '')
+const currentFrameIndex = computed(() => fallbackPlaybackFrameIndex.value)
 const activeDetectionFrame = computed<DetectionFrameResult | null>(() => {
   if (currentMedia.value?.kind !== 'video') {
     return null
@@ -104,15 +122,43 @@ const activeDetectionFrame = computed<DetectionFrameResult | null>(() => {
 
   return frameResults.value.get(fallbackPlaybackFrameIndex.value) ?? null
 })
-const currentFrameIndex = computed(() => {
-  return fallbackPlaybackFrameIndex.value
-})
 const displayedBoxes = computed(() => {
   if (currentMedia.value?.kind === 'video') {
     return activeDetectionFrame.value?.boxes ?? []
   }
 
   return boxes.value
+})
+const isDetectionSessionActive = computed(() => {
+  return effectiveMediaKind.value === 'video' && (
+    isDetecting.value ||
+    sseStatus.value === 'connecting' ||
+    sseStatus.value === 'connected' ||
+    modelStatus.value === '加载中' ||
+    modelStatus.value === '已就绪' ||
+    modelStatus.value === '已完成'
+  )
+})
+const totalFrameCount = computed(() => {
+  const duration = currentMediaDuration.value
+  const frameRate = Math.max(1, activeFrameRate.value)
+
+  if (effectiveMediaKind.value !== 'video') {
+    return null
+  }
+
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) {
+    return null
+  }
+
+  return Math.max(1, Math.ceil(duration * frameRate))
+})
+const videoBufferState = computed<VideoBufferState>(() => {
+  if (effectiveMediaKind.value !== 'video' || !isPlaybackBuffering.value || !isDetectionSessionActive.value) {
+    return 'none'
+  }
+
+  return hasPlaybackStarted.value ? 'rebuffer' : 'initial'
 })
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -274,7 +320,107 @@ const closeResultsDrawer = () => {
   resultsDrawerVisible.value = false
 }
 
-const resetPlaybackBufferState = (label = '正在缓冲检测结果') => {
+const clearInferenceSpeedEstimator = () => {
+  inferenceSessionStartedAt.value = null
+  inferenceSessionBaseFrameIndex.value = 0
+  lastInferenceSpeedSample.value = null
+  estimatedInferenceFps.value = null
+}
+
+const beginInferenceSpeedEstimator = (baseFrameIndex = 0) => {
+  inferenceSessionStartedAt.value = Date.now()
+  inferenceSessionBaseFrameIndex.value = Math.max(0, baseFrameIndex)
+  lastInferenceSpeedSample.value = null
+  estimatedInferenceFps.value = null
+}
+
+const getSafeFrameRate = () => {
+  return Math.max(1, activeFrameRate.value)
+}
+
+const computeLagCompensationFrames = (playbackFrameIndex: number) => {
+  const totalFrames = totalFrameCount.value
+  const inferenceFps = estimatedInferenceFps.value
+  const playbackFps = getSafeFrameRate()
+
+  if (
+    !totalFrames ||
+    typeof inferenceFps !== 'number' ||
+    !Number.isFinite(inferenceFps) ||
+    inferenceFps <= 0 ||
+    inferenceFps >= playbackFps
+  ) {
+    return 0
+  }
+
+  const remainingFrames = Math.max(0, totalFrames - Math.max(1, playbackFrameIndex) + 1)
+  return Math.ceil(remainingFrames * (1 - inferenceFps / playbackFps))
+}
+
+const computeBufferFrames = (playbackFrameIndex: number, phase: 'start' | 'pause' | 'resume') => {
+  const frameRate = getSafeFrameRate()
+  const lagCompensationFrames = computeLagCompensationFrames(playbackFrameIndex)
+
+  if (phase === 'start') {
+    const minFrames = Math.ceil(frameRate * STARTUP_MIN_SAMPLE_SECONDS)
+    const safetyFrames = Math.ceil(frameRate * STARTUP_SAFETY_SECONDS)
+    return Math.max(minFrames, lagCompensationFrames + safetyFrames)
+  }
+
+  if (phase === 'pause') {
+    const minFrames = Math.ceil(frameRate * REBUFFER_STOP_SAFETY_SECONDS)
+    const safetyFrames = Math.ceil(frameRate * REBUFFER_STOP_SAFETY_SECONDS)
+    return Math.max(minFrames, lagCompensationFrames + safetyFrames)
+  }
+
+  const minFrames = Math.ceil(frameRate * REBUFFER_RESUME_SAFETY_SECONDS)
+  const safetyFrames = Math.ceil(frameRate * REBUFFER_RESUME_SAFETY_SECONDS)
+  return Math.max(minFrames, lagCompensationFrames + safetyFrames)
+}
+
+const startupBufferFrames = computed(() => {
+  return computeBufferFrames(1, 'start')
+})
+
+const stopBufferFrames = computed(() => {
+  return computeBufferFrames(currentFrameIndex.value || 1, 'pause')
+})
+
+const resumeBufferFrames = computed(() => {
+  return Math.max(stopBufferFrames.value + 1, computeBufferFrames(currentFrameIndex.value || 1, 'resume'))
+})
+
+const initialBufferProgress = computed(() => {
+  if (videoBufferState.value !== 'initial') {
+    return 0
+  }
+
+  const targetFrames = startupBufferFrames.value
+  if (targetFrames <= 0) {
+    return 1
+  }
+
+  return Math.min(1, Math.max(0, (latestFrameIndex.value ?? 0) / targetFrames))
+})
+
+const updateInitialBufferLabel = (latestBufferedFrameIndex: number) => {
+  const frameRate = getSafeFrameRate()
+  const targetSeconds = startupBufferFrames.value / frameRate
+  const bufferedSeconds = latestBufferedFrameIndex / frameRate
+  const speedText = typeof estimatedInferenceFps.value === 'number' && Number.isFinite(estimatedInferenceFps.value)
+    ? `推理 ${estimatedInferenceFps.value.toFixed(1)} FPS`
+    : '分析推理速度中'
+
+  playbackBufferLabel.value = `等待缓冲 ${bufferedSeconds.toFixed(1)} / ${targetSeconds.toFixed(1)}s · ${speedText}`
+}
+
+const updateRebufferLabel = (bufferedAheadFrames: number) => {
+  const frameRate = getSafeFrameRate()
+  const bufferedAheadSeconds = Math.max(0, bufferedAheadFrames) / frameRate
+  playbackBufferLabel.value = `检测结果缓冲中 ${bufferedAheadSeconds.toFixed(1)}s`
+}
+
+const resetPlaybackBufferState = (label = '等待缓冲') => {
   hasPlaybackStarted.value = false
   isPlaybackBuffering.value = true
   playbackBufferLabel.value = label
@@ -284,6 +430,48 @@ const resumePlaybackFromCachedResults = () => {
   hasPlaybackStarted.value = true
   isPlaybackBuffering.value = false
   playbackBufferLabel.value = ''
+}
+
+const updateInferenceSpeedEstimate = (frameIndex: number) => {
+  const startedAt = inferenceSessionStartedAt.value
+  if (!startedAt) {
+    return
+  }
+
+  const relativeFrameIndex = frameIndex - inferenceSessionBaseFrameIndex.value
+  if (relativeFrameIndex <= 0) {
+    return
+  }
+
+  const now = Date.now()
+  const elapsedSeconds = (now - startedAt) / 1000
+  if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
+    return
+  }
+
+  const averageFps = relativeFrameIndex / elapsedSeconds
+  let sampleFps = averageFps
+  const previousSample = lastInferenceSpeedSample.value
+
+  if (previousSample && now > previousSample.atMs && relativeFrameIndex > previousSample.frameIndex) {
+    const deltaFrames = relativeFrameIndex - previousSample.frameIndex
+    const deltaSeconds = (now - previousSample.atMs) / 1000
+    if (deltaSeconds > 0) {
+      const instantFps = deltaFrames / deltaSeconds
+      sampleFps = instantFps * INFERENCE_SPEED_SAMPLE_WEIGHT + averageFps * (1 - INFERENCE_SPEED_SAMPLE_WEIGHT)
+    }
+  }
+
+  if (Number.isFinite(sampleFps) && sampleFps > 0) {
+    estimatedInferenceFps.value = typeof estimatedInferenceFps.value === 'number' && Number.isFinite(estimatedInferenceFps.value)
+      ? estimatedInferenceFps.value * (1 - INFERENCE_SPEED_BLEND_FACTOR) + sampleFps * INFERENCE_SPEED_BLEND_FACTOR
+      : sampleFps
+  }
+
+  lastInferenceSpeedSample.value = {
+    frameIndex: relativeFrameIndex,
+    atMs: now
+  }
 }
 
 const setCurrentMediaSession = (media: DetectionMediaItem) => {
@@ -304,6 +492,8 @@ const setCurrentMediaSession = (media: DetectionMediaItem) => {
 
   fallbackPlaybackFrameIndex.value = 0
   mediaLoaded.value = false
+  currentMediaDuration.value = null
+  clearInferenceSpeedEstimator()
   clearSelectedTarget()
   resultsDrawerVisible.value = false
   detectionResultMediaId.value = null
@@ -352,6 +542,8 @@ const startDetectionForCurrentMedia = ({
     shouldPreserveResults &&
     frameResults.value.size > 0
 
+  beginInferenceSpeedEstimator(shouldPreserveResults ? latestFrameIndex.value ?? 0 : 0)
+
   if (media.kind === 'video') {
     videoMonitorRef.value?.resetToStart()
     fallbackPlaybackFrameIndex.value = 1
@@ -359,7 +551,7 @@ const startDetectionForCurrentMedia = ({
     if (shouldRestartFromCachedResults) {
       resumePlaybackFromCachedResults()
     } else {
-      resetPlaybackBufferState('正在缓冲检测结果')
+      resetPlaybackBufferState('等待缓冲')
     }
   }
 
@@ -367,6 +559,7 @@ const startDetectionForCurrentMedia = ({
     preserveResults: shouldPreserveResults
   })
   if (!controller) {
+    clearInferenceSpeedEstimator()
     return false
   }
 
@@ -500,8 +693,10 @@ const handleStartInferenceFromLibrary = (mediaId?: string) => {
 const pauseDetection = () => {
   if (sseStatus.value === 'connected' || sseStatus.value === 'connecting' || isDetecting.value) {
     disconnect()
+    clearInferenceSpeedEstimator()
     videoMonitorRef.value?.pause()
     isPlaybackBuffering.value = false
+    playbackBufferLabel.value = ''
     ElMessage.info('已暂停识别')
     return
   }
@@ -513,10 +708,13 @@ const handleDbConnect = () => {
   ElMessage.success(`正在连接到 ${dbForm.value.type} 数据库...`)
 }
 
-const handleMediaLoaded = (_payload: MediaLoadedPayload) => {
+const handleMediaLoaded = (payload: MediaLoadedPayload) => {
   mediaLoaded.value = true
+  currentMediaDuration.value = typeof payload.duration === 'number' && Number.isFinite(payload.duration)
+    ? payload.duration
+    : null
   videoMonitorRef.value?.pause()
-  resetPlaybackBufferState('正在缓冲检测结果')
+  resetPlaybackBufferState('等待缓冲')
 
   if (pendingAutoStart.value) {
     const started = startDetectionForCurrentMedia({ forceImmediate: true, silent: true })
@@ -576,14 +774,42 @@ const handleDbFormUpdate = (value: DbFormState) => {
   dbForm.value = value
 }
 
+watch(latestFrameIndex, (nextFrameIndex) => {
+  if (typeof nextFrameIndex === 'number' && Number.isFinite(nextFrameIndex)) {
+    updateInferenceSpeedEstimate(nextFrameIndex)
+  }
+})
+
 watch(
-  [latestFrameIndex, currentFrameIndex, mediaLoaded, isDetecting, modelStatus, effectiveMediaKind],
-  ([nextLatestFrameIndex, nextPlaybackFrameIndex, nextMediaLoaded, nextIsDetecting, nextModelStatus, nextMediaKind]) => {
-    if (nextMediaKind !== 'video' || !nextMediaLoaded || !videoMonitorRef.value) {
+  [
+    latestFrameIndex,
+    currentFrameIndex,
+    mediaLoaded,
+    isDetecting,
+    modelStatus,
+    effectiveMediaKind,
+    isDetectionSessionActive,
+    startupBufferFrames,
+    stopBufferFrames,
+    resumeBufferFrames
+  ],
+  ([
+    nextLatestFrameIndex,
+    nextPlaybackFrameIndex,
+    nextMediaLoaded,
+    _nextIsDetecting,
+    nextModelStatus,
+    nextMediaKind,
+    nextIsDetectionSessionActive,
+    nextStartupBufferFrames,
+    nextStopBufferFrames,
+    nextResumeBufferFrames
+  ]) => {
+    if (nextMediaKind !== 'video' || !nextMediaLoaded || !videoMonitorRef.value || !nextIsDetectionSessionActive) {
       return
     }
 
-    const latestBufferedFrameIndex = nextLatestFrameIndex ?? 0
+    const latestBufferedFrameIndex = Math.max(0, nextLatestFrameIndex ?? 0)
     const playbackFrameIndex = Math.max(1, nextPlaybackFrameIndex ?? 1)
 
     if (nextModelStatus === '已完成') {
@@ -597,15 +823,8 @@ watch(
       return
     }
 
-    if (!nextIsDetecting && latestBufferedFrameIndex === 0) {
-      isPlaybackBuffering.value = true
-      playbackBufferLabel.value = '正在缓冲'
-      videoMonitorRef.value.pause()
-      return
-    }
-
     if (!hasPlaybackStarted.value) {
-      if (latestBufferedFrameIndex >= initialBufferFrames.value) {
+      if (latestBufferedFrameIndex >= nextStartupBufferFrames) {
         hasPlaybackStarted.value = true
         isPlaybackBuffering.value = false
         playbackBufferLabel.value = ''
@@ -613,26 +832,35 @@ watch(
         return
       }
 
-      const bufferedSeconds = latestBufferedFrameIndex / Math.max(1, activeFrameRate.value)
       isPlaybackBuffering.value = true
-      playbackBufferLabel.value = `正在缓冲检测结果 ${bufferedSeconds.toFixed(1)} / ${INITIAL_BUFFER_SECONDS}s`
+      updateInitialBufferLabel(latestBufferedFrameIndex)
       videoMonitorRef.value.pause()
       return
     }
 
-    const bufferedAheadFrames = latestBufferedFrameIndex - playbackFrameIndex
-    if (bufferedAheadFrames <= stopBufferFrames.value) {
+    const bufferedAheadFrames = Math.max(0, latestBufferedFrameIndex - playbackFrameIndex)
+
+    if (bufferedAheadFrames < nextStopBufferFrames) {
       isPlaybackBuffering.value = true
-      playbackBufferLabel.value = '检测结果追帧中，正在缓冲...'
+      updateRebufferLabel(bufferedAheadFrames)
       videoMonitorRef.value.pause()
       return
     }
 
-    if (isPlaybackBuffering.value && bufferedAheadFrames >= resumeBufferFrames.value) {
-      isPlaybackBuffering.value = false
-      playbackBufferLabel.value = ''
-      void videoMonitorRef.value.play()
+    if (isPlaybackBuffering.value) {
+      if (bufferedAheadFrames >= nextResumeBufferFrames) {
+        isPlaybackBuffering.value = false
+        playbackBufferLabel.value = ''
+        void videoMonitorRef.value.play()
+        return
+      }
+
+      updateRebufferLabel(bufferedAheadFrames)
+      videoMonitorRef.value.pause()
+      return
     }
+
+    playbackBufferLabel.value = ''
   },
   { immediate: true }
 )
@@ -677,8 +905,9 @@ onUnmounted(() => {
               :frame-rate="activeFrameRate"
               :current-frame-index="currentFrameIndex"
               :media-label="currentMediaLabel"
-              :buffering="isPlaybackBuffering"
-              :buffering-label="playbackBufferLabel"
+              :buffer-state="videoBufferState"
+              :buffer-label="playbackBufferLabel"
+              :buffer-progress="initialBufferProgress"
               @media-loaded="handleMediaLoaded"
               @frame-change="handleFrameChange"
               @box-click="handleBoxSelect"
@@ -895,3 +1124,6 @@ onUnmounted(() => {
   min-height: 0;
 }
 </style>
+
+
+

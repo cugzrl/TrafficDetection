@@ -3,7 +3,6 @@ import type { DetectionBox, DetectionFrameResult } from '../types/detection'
 
 const DEFAULT_SSE_BASE = 'http://127.0.0.1:8000'
 const DEFAULT_FRAME_CACHE_SIZE = Number.POSITIVE_INFINITY
-const DEFAULT_MATCH_TOLERANCE_SECONDS = 0.12
 
 export type DetectionConnectionStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
 
@@ -144,13 +143,12 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
   const currentActive = ref(0)
   const boxes = ref<DetectionBox[]>([])
   const frameResults = shallowRef<Map<number, DetectionFrameResult>>(new Map())
-  const timelineResults = shallowRef<DetectionFrameResult[]>([])
   const lastMessageAt = ref<number | null>(null)
   const connectionError = ref<string | null>(null)
   const lastBatch = shallowRef<DetectionFrameResult[] | null>(null)
   const latestFrameIndex = ref<number | null>(null)
   const latestKnownFps = ref(30)
-  const latestSampleInterval = ref(DEFAULT_MATCH_TOLERANCE_SECONDS)
+  const lastObservedFrame = shallowRef<DetectionFrameResult | null>(null)
 
   const getFrameSecond = (frame: DetectionFrameResult | null | undefined) => {
     if (!frame) {
@@ -165,22 +163,17 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
       return frame.timestampMs / 1000
     }
 
-    if (latestKnownFps.value > 0) {
-      return frame.frameIndex / latestKnownFps.value
-    }
-
     return undefined
   }
 
   const clearResults = () => {
     boxes.value = []
     frameResults.value = new Map()
-    timelineResults.value = []
     currentActive.value = 0
     lastMessageAt.value = null
     lastBatch.value = null
     latestFrameIndex.value = null
-    latestSampleInterval.value = DEFAULT_MATCH_TOLERANCE_SECONDS
+    lastObservedFrame.value = null
   }
 
   const disconnect = () => {
@@ -203,51 +196,36 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     connectionError.value = null
   }
 
-  const trimFrameCache = (nextTimelineResults: DetectionFrameResult[]) => {
-    if (!Number.isFinite(maxFrameCache)) {
-      return nextTimelineResults
-    }
-
-    if (nextTimelineResults.length <= maxFrameCache) {
-      return nextTimelineResults
-    }
-
-    return nextTimelineResults.slice(nextTimelineResults.length - maxFrameCache)
-  }
-
-  const updateEstimatedFrameState = (nextFrame: DetectionFrameResult, previousFrame?: DetectionFrameResult) => {
+  const updateEstimatedFrameState = (nextFrame: DetectionFrameResult) => {
+    const previousFrame = lastObservedFrame.value
     const nextSecond = getFrameSecond(nextFrame)
     const previousSecond = getFrameSecond(previousFrame)
 
     if (
+      previousFrame &&
+      nextFrame.frameIndex > previousFrame.frameIndex &&
       typeof previousSecond === 'number' &&
       typeof nextSecond === 'number' &&
       nextSecond > previousSecond
     ) {
       const deltaSeconds = nextSecond - previousSecond
-      const deltaFrames = nextFrame.frameIndex - previousFrame!.frameIndex
-
-      latestSampleInterval.value = deltaSeconds
-
+      const deltaFrames = nextFrame.frameIndex - previousFrame.frameIndex
       const estimated = Math.round(deltaFrames / deltaSeconds)
+
       if (estimated > 0) {
         latestKnownFps.value = estimated
-        return
       }
-    }
-
-    if (typeof nextSecond === 'number' && nextSecond > 0) {
+    } else if (typeof nextSecond === 'number' && nextSecond > 0 && nextFrame.frameIndex > 0) {
       const estimated = Math.round(nextFrame.frameIndex / nextSecond)
       if (estimated > 0) {
         latestKnownFps.value = estimated
       }
     }
+
+    lastObservedFrame.value = nextFrame
   }
 
   const ingestFrame = (nextFrame: DetectionFrameResult) => {
-    const previousTimeline = timelineResults.value
-    const previousFrame = previousTimeline.length > 0 ? previousTimeline[previousTimeline.length - 1] : undefined
-
     const nextMap = new Map(frameResults.value)
     nextMap.set(nextFrame.frameIndex, nextFrame)
 
@@ -262,15 +240,11 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
       }
     }
 
-    const filteredTimeline = previousTimeline.filter((item) => item.frameIndex !== nextFrame.frameIndex)
-    const nextTimeline = trimFrameCache([...filteredTimeline, nextFrame])
-
     frameResults.value = nextMap
-    timelineResults.value = nextTimeline
     boxes.value = nextFrame.boxes
     currentActive.value = nextFrame.boxes.length
     latestFrameIndex.value = nextFrame.frameIndex
-    updateEstimatedFrameState(nextFrame, previousFrame)
+    updateEstimatedFrameState(nextFrame)
   }
 
   const processMessage = (rawMessage: string) => {
@@ -330,6 +304,7 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     if (!preserveResults) {
       clearResults()
     }
+    lastObservedFrame.value = null
 
     const controller = new AbortController()
     abortController.value = controller
@@ -407,100 +382,6 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     return controller
   }
 
-  const getMatchWindow = (results: DetectionFrameResult[], targetIndex: number) => {
-    const fallbackWindow = Math.max(
-      latestSampleInterval.value,
-      latestKnownFps.value > 0 ? 1 / latestKnownFps.value : DEFAULT_MATCH_TOLERANCE_SECONDS,
-      DEFAULT_MATCH_TOLERANCE_SECONDS
-    )
-
-    const currentSecond = getFrameSecond(results[targetIndex])
-    if (typeof currentSecond !== 'number') {
-      return fallbackWindow
-    }
-
-    const previousSecond = getFrameSecond(results[targetIndex - 1])
-    const nextSecond = getFrameSecond(results[targetIndex + 1])
-    const previousGap = typeof previousSecond === 'number' ? currentSecond - previousSecond : fallbackWindow
-    const nextGap = typeof nextSecond === 'number' ? nextSecond - currentSecond : fallbackWindow
-
-    return Math.max(fallbackWindow, previousGap, nextGap)
-  }
-
-  const getFrameResultForTime = (currentTime: number) => {
-    const results = timelineResults.value
-    if (results.length === 0 || !Number.isFinite(currentTime)) {
-      return null
-    }
-
-    let low = 0
-    let high = results.length - 1
-    let answerIndex = -1
-
-    while (low <= high) {
-      const middle = Math.floor((low + high) / 2)
-      const middleSecond = getFrameSecond(results[middle])
-
-      if (typeof middleSecond !== 'number') {
-        low = middle + 1
-        continue
-      }
-
-      if (middleSecond <= currentTime + 0.001) {
-        answerIndex = middle
-        low = middle + 1
-      } else {
-        high = middle - 1
-      }
-    }
-
-    if (answerIndex < 0) {
-      const firstFrame = results[0]
-      const firstSecond = getFrameSecond(firstFrame)
-      if (typeof firstSecond !== 'number') {
-        return null
-      }
-
-      return firstSecond - currentTime <= getMatchWindow(results, 0) ? firstFrame : null
-    }
-
-    const matchedFrame = results[answerIndex]
-    const matchedSecond = getFrameSecond(matchedFrame)
-    if (typeof matchedSecond !== 'number') {
-      return matchedFrame ?? null
-    }
-
-    return currentTime - matchedSecond <= getMatchWindow(results, answerIndex)
-      ? matchedFrame
-      : null
-  }
-
-  const getFrameResultForFrame = (frameIndex: number) => {
-    const directMatch = frameResults.value.get(frameIndex)
-    if (directMatch) {
-      return directMatch
-    }
-
-    let matchedResult: DetectionFrameResult | null = null
-    for (const item of timelineResults.value) {
-      if (item.frameIndex > frameIndex) {
-        break
-      }
-
-      matchedResult = item
-    }
-
-    return matchedResult
-  }
-
-  const getBoxesForTime = (currentTime: number) => {
-    return getFrameResultForTime(currentTime)?.boxes ?? []
-  }
-
-  const getBoxesForFrame = (frameIndex: number) => {
-    return getFrameResultForFrame(frameIndex)?.boxes ?? []
-  }
-
   onUnmounted(() => {
     disconnect()
   })
@@ -512,22 +393,14 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     currentActive,
     boxes,
     frameResults,
-    timelineResults,
     latestFrameIndex,
     latestKnownFps,
-    latestSampleInterval,
     lastBatch,
     lastMessageAt,
     connectionError,
     connect,
     disconnect,
     resetSession,
-    clearResults,
-    getBoxesForTime,
-    getBoxesForFrame,
-    getFrameResultForTime,
-    getFrameResultForFrame
+    clearResults
   }
 }
-
-

@@ -27,6 +27,8 @@ interface RenderedBoxMetrics {
   height: number
 }
 
+type BufferState = 'none' | 'initial' | 'rebuffer'
+
 const props = withDefaults(defineProps<{
   mediaKind?: MediaKind
   mediaSrc?: string
@@ -36,8 +38,9 @@ const props = withDefaults(defineProps<{
   frameRate?: number
   currentFrameIndex?: number | null
   mediaLabel?: string
-  buffering?: boolean
-  bufferingLabel?: string
+  bufferState?: BufferState
+  bufferLabel?: string
+  bufferProgress?: number
 }>(), {
   mediaKind: 'unknown',
   mediaSrc: '',
@@ -47,8 +50,9 @@ const props = withDefaults(defineProps<{
   frameRate: 25,
   currentFrameIndex: null,
   mediaLabel: '未选择媒体',
-  buffering: false,
-  bufferingLabel: '正在缓冲检测结果'
+  bufferState: 'none',
+  bufferLabel: '等待缓冲',
+  bufferProgress: 0
 })
 
 const emit = defineEmits<{
@@ -121,20 +125,24 @@ const mediaModeLabel = computed(() => {
   return '等待媒体'
 })
 
+const showInitialBufferState = computed(() => {
+  return displayMode.value === 'video' && props.bufferState === 'initial'
+})
+
+const showRebufferState = computed(() => {
+  return displayMode.value === 'video' && props.bufferState === 'rebuffer'
+})
+
+const clampedBufferProgress = computed(() => {
+  return Math.min(1, Math.max(0, props.bufferProgress ?? 0))
+})
+
+const bufferPercentLabel = computed(() => {
+  return `${Math.round(clampedBufferProgress.value * 100)}%`
+})
+
 const getCanvasContext = () => {
   return canvasRef.value?.getContext('2d') ?? null
-}
-
-const clearCanvas = () => {
-  const ctx = getCanvasContext()
-  const canvas = canvasRef.value
-
-  if (!ctx || !canvas) {
-    return
-  }
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  renderedBoxes.value = []
 }
 
 const getIntrinsicSize = () => {
@@ -533,9 +541,28 @@ defineExpose({
         当前帧 {{ currentFrameIndex }}
       </div>
 
-      <div v-if="displayMode === 'video' && buffering" class="buffering-overlay">
+      <div v-if="showInitialBufferState" class="initial-buffer-indicator">
+        <div class="pause-hud">
+          <span class="pause-bar"></span>
+          <span class="pause-bar"></span>
+        </div>
+        <div v-if="bufferLabel" class="buffering-text initial-buffer-text">{{ bufferLabel }}</div>
+      </div>
+
+      <div v-if="showRebufferState" class="rebuffer-indicator">
         <div class="buffering-spinner"></div>
-        <div class="buffering-text">{{ bufferingLabel }}</div>
+        <div v-if="bufferLabel" class="buffering-text">{{ bufferLabel }}</div>
+      </div>
+
+      <div v-if="showInitialBufferState" class="buffer-progress-shell">
+        <div class="buffer-progress-meta">
+          <span class="buffer-progress-label">缓冲准备</span>
+          <span class="buffer-progress-percent">{{ bufferPercentLabel }}</span>
+        </div>
+        <div class="buffer-progress-track">
+          <div class="buffer-progress-fill" :style="{ width: `${clampedBufferProgress * 100}%` }"></div>
+          <div class="buffer-progress-scan"></div>
+        </div>
       </div>
 
       <div class="scan-line"></div>
@@ -684,7 +711,8 @@ defineExpose({
   text-shadow: 0 0 6px rgba(0, 255, 255, 0.5);
 }
 
-.buffering-overlay {
+.initial-buffer-indicator,
+.rebuffer-indicator {
   position: absolute;
   inset: 0;
   z-index: 9;
@@ -693,9 +721,31 @@ defineExpose({
   align-items: center;
   justify-content: center;
   gap: 14px;
-  background: rgba(1, 10, 20, 0.36);
-  backdrop-filter: blur(4px);
   pointer-events: none;
+}
+
+.pause-hud {
+  width: 82px;
+  height: 82px;
+  border: 1px solid rgba(0, 210, 255, 0.34);
+  background: linear-gradient(180deg, rgba(0, 210, 255, 0.16), rgba(0, 90, 150, 0.18));
+  box-shadow:
+    0 0 18px rgba(0, 210, 255, 0.18),
+    inset 0 0 18px rgba(0, 210, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  clip-path: polygon(12% 0, 88% 0, 100% 18%, 100% 82%, 88% 100%, 12% 100%, 0 82%, 0 18%);
+}
+
+.pause-bar {
+  width: 10px;
+  height: 34px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #a6f7ff 0%, #00ffff 42%, #00a8ff 100%);
+  box-shadow: 0 0 16px rgba(0, 210, 255, 0.46);
+  opacity: 0.88;
 }
 
 .buffering-spinner {
@@ -712,12 +762,95 @@ defineExpose({
 .buffering-text {
   padding: 8px 14px;
   border: 1px solid rgba(0, 210, 255, 0.28);
-  background: rgba(2, 18, 35, 0.72);
+  background: rgba(2, 18, 35, 0.58);
   color: #dffcff;
   font-size: 13px;
   letter-spacing: 0.6px;
   text-shadow: 0 0 6px rgba(0, 210, 255, 0.3);
   box-shadow: 0 0 12px rgba(0, 210, 255, 0.12);
+}
+
+.initial-buffer-text {
+  max-width: min(560px, calc(100% - 60px));
+  text-align: center;
+}
+
+.buffer-progress-shell {
+  position: absolute;
+  right: 20px;
+  bottom: 18px;
+  left: 20px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  pointer-events: none;
+}
+
+.buffer-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #aef4ff;
+  font-size: 12px;
+  letter-spacing: 0.8px;
+  text-shadow: 0 0 8px rgba(0, 210, 255, 0.28);
+}
+
+.buffer-progress-label {
+  color: #00d2ff;
+}
+
+.buffer-progress-percent {
+  color: #00ffff;
+  font-weight: 600;
+}
+
+.buffer-progress-track {
+  position: relative;
+  height: 12px;
+  border: 1px solid rgba(0, 210, 255, 0.32);
+  background:
+    linear-gradient(90deg, rgba(0, 210, 255, 0.08), rgba(2, 18, 35, 0.72)),
+    rgba(2, 18, 35, 0.72);
+  box-shadow:
+    0 0 14px rgba(0, 210, 255, 0.14),
+    inset 0 0 10px rgba(0, 210, 255, 0.08);
+  overflow: hidden;
+}
+
+.buffer-progress-track::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 15px,
+    rgba(0, 255, 255, 0.08) 15px,
+    rgba(0, 255, 255, 0.08) 16px
+  );
+  opacity: 0.7;
+}
+
+.buffer-progress-fill {
+  position: relative;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(0, 210, 255, 0.32), #00d2ff 42%, #00ffff 100%);
+  box-shadow: 0 0 18px rgba(0, 210, 255, 0.32);
+  transition: width 180ms ease-out;
+}
+
+.buffer-progress-scan {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 18%;
+  min-width: 48px;
+  background: linear-gradient(90deg, transparent, rgba(0, 255, 255, 0.32), transparent);
+  filter: drop-shadow(0 0 10px rgba(0, 255, 255, 0.28));
+  animation: progress-scan 1.8s linear infinite;
 }
 
 .badge-label {
@@ -775,6 +908,16 @@ defineExpose({
 
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes progress-scan {
+  from {
+    transform: translateX(-420%);
+  }
+
+  to {
+    transform: translateX(260%);
   }
 }
 
