@@ -13,6 +13,7 @@ interface DetectionSSEFramePayload {
   scores?: number[]
   names?: string[]
   labels?: number[]
+  track_ids?: Array<string | number>
   [key: string]: unknown
 }
 
@@ -63,7 +64,8 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
   const rawScores = Array.isArray(value.scores) ? value.scores : []
   const rawNames = Array.isArray(value.names) ? value.names : []
   const rawLabels = Array.isArray(value.labels) ? value.labels : []
-  const count = Math.max(rawBoxes.length, rawScores.length, rawNames.length, rawLabels.length)
+  const rawTrackIds = Array.isArray(value.track_ids) ? value.track_ids : []
+  const count = Math.max(rawBoxes.length, rawScores.length, rawNames.length, rawLabels.length, rawTrackIds.length)
   const boxes: DetectionBox[] = []
 
   for (let index = 0; index < count; index += 1) {
@@ -81,6 +83,10 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
     const y2 = coords[3] ?? y1
     const confidence = toFiniteNumber(rawScores[index])
     const labelId = toFiniteNumber(rawLabels[index])
+    const rawTrackId = rawTrackIds[index]
+    const trackId = typeof rawTrackId === 'number' || typeof rawTrackId === 'string'
+      ? rawTrackId
+      : undefined
     const labelName = typeof rawNames[index] === 'string' && rawNames[index].length > 0
       ? rawNames[index]
       : `目标-${labelId ?? index}`
@@ -95,7 +101,8 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
       score: confidence,
       frameIndex,
       second,
-      objectId: `${frameIndex}-${index}`,
+      trackId,
+      objectId: trackId ?? `${frameIndex}-${index}`,
       labelId
     })
   }
@@ -404,3 +411,5 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     clearResults
   }
 }
+
+

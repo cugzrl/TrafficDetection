@@ -2,6 +2,7 @@
 node_modules/
 public/
 dist/
+.vite-check/
 TrafficDetection_Server/yolox/
 Track/
 agents.md

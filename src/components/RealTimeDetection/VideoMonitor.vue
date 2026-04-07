@@ -220,9 +220,12 @@ const drawBoxes = (ctx: CanvasRenderingContext2D, metrics: RenderMetrics) => {
     const color = COLOR_MAP[box.type] || '#00d2ff'
     const boxKey = getDetectionBoxKey(box, index)
     const isSelected = props.selectedBoxKey === boxKey
+    const trackPrefix = box.trackId !== undefined && box.trackId !== null
+      ? `${box.trackId} `
+      : ''
     const labelText = box.confidence !== undefined
-      ? `${box.type} ${(box.confidence * 100).toFixed(1)}%`
-      : box.type
+      ? `${trackPrefix} ${box.type} ${(box.confidence * 100).toFixed(1)}%`
+      : `${trackPrefix} ${box.type}`
 
     ctx.beginPath()
     ctx.lineWidth = isSelected ? 2.6 : 1.8
@@ -938,3 +941,6 @@ defineExpose({
   z-index: 2;
 }
 </style>
+
+
+
