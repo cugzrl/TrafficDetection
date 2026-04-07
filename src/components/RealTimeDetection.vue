@@ -43,10 +43,15 @@ interface InferenceSpeedSample {
 }
 
 const API_BASE = 'http://127.0.0.1:8000'
+//开始前缓冲时间
 const STARTUP_MIN_SAMPLE_SECONDS = 0.75
+//开始安全帧数时间
 const STARTUP_SAFETY_SECONDS = 1.25
-const REBUFFER_STOP_SAFETY_SECONDS = 0.55
+//不足0.5秒就暂停
+const REBUFFER_STOP_SAFETY_SECONDS = 0.5
+//积累安全帧数时间
 const REBUFFER_RESUME_SAFETY_SECONDS = 1.4
+//速度估计
 const INFERENCE_SPEED_BLEND_FACTOR = 0.35
 const INFERENCE_SPEED_SAMPLE_WEIGHT = 0.6
 
