@@ -14,6 +14,21 @@ interface DetectionSSEFramePayload {
   names?: string[]
   labels?: number[]
   track_ids?: Array<string | number>
+  securitylevel?: Array<string | number>
+  length?: number[]
+  width?: number[]
+  height?: number[]
+  speed_x?: number[]
+  speed_y?: number[]
+  speed_heading?: Array<string | number>
+  acceleration_x?: number[]
+  acceleration_y?: number[]
+  acc_heading?: Array<string | number>
+  lontitude?: number[]
+  lantitude?: number[]
+  altitute?: number[]
+  heading?: Array<string | number>
+  plate?: string[]
   [key: string]: unknown
 }
 
@@ -49,6 +64,31 @@ const toFiniteNumber = (value: unknown) => {
   return undefined
 }
 
+const toScalarValue = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+
+    return value.trim()
+  }
+
+  return undefined
+}
+
+const toStringValue = (value: unknown) => {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim()
+  }
+
+  return undefined
+}
+
 const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null => {
   if (!isRecord(value)) {
     return null
@@ -65,7 +105,45 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
   const rawNames = Array.isArray(value.names) ? value.names : []
   const rawLabels = Array.isArray(value.labels) ? value.labels : []
   const rawTrackIds = Array.isArray(value.track_ids) ? value.track_ids : []
-  const count = Math.max(rawBoxes.length, rawScores.length, rawNames.length, rawLabels.length, rawTrackIds.length)
+  const rawSecurityLevels = Array.isArray(value.securitylevel) ? value.securitylevel : []
+  const rawLengths = Array.isArray(value.length) ? value.length : []
+  const rawObjectWidths = Array.isArray(value.width) ? value.width : []
+  const rawObjectHeights = Array.isArray(value.height) ? value.height : []
+  const rawSpeedX = Array.isArray(value.speed_x) ? value.speed_x : []
+  const rawSpeedY = Array.isArray(value.speed_y) ? value.speed_y : []
+  const rawSpeedHeading = Array.isArray(value.speed_heading) ? value.speed_heading : []
+  const rawAccelerationX = Array.isArray(value.acceleration_x) ? value.acceleration_x : []
+  const rawAccelerationY = Array.isArray(value.acceleration_y) ? value.acceleration_y : []
+  const rawAccHeading = Array.isArray(value.acc_heading) ? value.acc_heading : []
+  const rawLongitude = Array.isArray(value.lontitude) ? value.lontitude : []
+  const rawLatitude = Array.isArray(value.lantitude) ? value.lantitude : []
+  const rawAltitude = Array.isArray(value.altitute) ? value.altitute : []
+  const rawHeading = Array.isArray(value.heading) ? value.heading : []
+  const rawPlate = Array.isArray(value.plate) ? value.plate : []
+
+  const count = Math.max(
+    rawBoxes.length,
+    rawScores.length,
+    rawNames.length,
+    rawLabels.length,
+    rawTrackIds.length,
+    rawSecurityLevels.length,
+    rawLengths.length,
+    rawObjectWidths.length,
+    rawObjectHeights.length,
+    rawSpeedX.length,
+    rawSpeedY.length,
+    rawSpeedHeading.length,
+    rawAccelerationX.length,
+    rawAccelerationY.length,
+    rawAccHeading.length,
+    rawLongitude.length,
+    rawLatitude.length,
+    rawAltitude.length,
+    rawHeading.length,
+    rawPlate.length,
+  )
+
   const boxes: DetectionBox[] = []
 
   for (let index = 0; index < count; index += 1) {
@@ -83,10 +161,7 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
     const y2 = coords[3] ?? y1
     const confidence = toFiniteNumber(rawScores[index])
     const labelId = toFiniteNumber(rawLabels[index])
-    const rawTrackId = rawTrackIds[index]
-    const trackId = typeof rawTrackId === 'number' || typeof rawTrackId === 'string'
-      ? rawTrackId
-      : undefined
+    const trackId = toScalarValue(rawTrackIds[index])
     const labelName = typeof rawNames[index] === 'string' && rawNames[index].length > 0
       ? rawNames[index]
       : `目标-${labelId ?? index}`
@@ -103,7 +178,23 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
       second,
       trackId,
       objectId: trackId ?? `${frameIndex}-${index}`,
-      labelId
+      labelId,
+      securityLevel: toScalarValue(rawSecurityLevels[index]),
+      objectLength: toFiniteNumber(rawLengths[index]),
+      objectWidth: toFiniteNumber(rawObjectWidths[index]),
+      objectHeight: toFiniteNumber(rawObjectHeights[index]),
+      speedX: toFiniteNumber(rawSpeedX[index]),
+      speedY: toFiniteNumber(rawSpeedY[index]),
+      speedHeading: toScalarValue(rawSpeedHeading[index]),
+      accelerationX: toFiniteNumber(rawAccelerationX[index]),
+      accelerationY: toFiniteNumber(rawAccelerationY[index]),
+      accHeading: toScalarValue(rawAccHeading[index]),
+      longitude: toFiniteNumber(rawLongitude[index]),
+      latitude: toFiniteNumber(rawLatitude[index]),
+      altitude: toFiniteNumber(rawAltitude[index]),
+      heading: toScalarValue(rawHeading[index]),
+      plate: toStringValue(rawPlate[index]),
+      laneInfo: '',
     })
   }
 
@@ -111,7 +202,7 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
     frameIndex,
     second,
     timestampMs: typeof second === 'number' ? Math.round(second * 1000) : undefined,
-    boxes
+    boxes,
   }
 }
 
@@ -140,7 +231,7 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     onOpen,
     onClose,
     onError,
-    onParseError
+    onParseError,
   } = options
 
   const abortController = shallowRef<AbortController | null>(null)
@@ -325,10 +416,10 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
         const response = await fetch(`${sseBase}/sse/second/${encodeURIComponent(videoId)}`, {
           method: 'GET',
           headers: {
-            Accept: 'text/event-stream'
+            Accept: 'text/event-stream',
           },
           cache: 'no-store',
-          signal: controller.signal
+          signal: controller.signal,
         })
 
         if (!response.ok) {
@@ -408,8 +499,6 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     connect,
     disconnect,
     resetSession,
-    clearResults
+    clearResults,
   }
 }
-
-

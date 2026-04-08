@@ -1,19 +1,48 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { List } from '@element-plus/icons-vue'
-import type { TrafficTableRow } from '../../composables/useTrafficMock'
+import type { DetectionBox } from '../../types/detection'
 
-withDefaults(defineProps<{
-  tableData?: TrafficTableRow[]
+interface DetectionTableRow {
+  id: string
+  type: string
+  plate: string
+  securityLevel?: number
+  securityLevelText: string
+  length: string
+  width: string
+  height: string
+  lonSpeed: string
+  latSpeed: string
+  motionDir: string
+  speedDir: string
+  longitude: string
+  latitude: string
+  altitude: string
+  laneInfo: string
+  lonAcc: string
+  latAcc: string
+  accDir: string
+}
+
+const props = withDefaults(defineProps<{
+  boxes?: DetectionBox[]
   isTablePaused?: boolean
   showCloseButton?: boolean
+  selectedBox?: DetectionBox | null
+  selectedBoxKey?: string | null
+  currentFrameIndex?: number | null
 }>(), {
-  tableData: () => [],
+  boxes: () => [],
   isTablePaused: false,
-  showCloseButton: false
+  showCloseButton: false,
+  selectedBox: null,
+  selectedBoxKey: null,
+  currentFrameIndex: null,
 })
 
 const emit = defineEmits<{
-  (e: 'expand-change', row: TrafficTableRow, expandedRows: TrafficTableRow[]): void
+  (e: 'expand-change', row: DetectionTableRow, expandedRows: DetectionTableRow[]): void
   (e: 'close'): void
 }>()
 
@@ -24,15 +53,65 @@ const colorMap: Record<string, string> = {
   公交车: '#927FF0',
   行人: '#98F07F',
   骑自行车的人: '#F0DD7F',
-  骑电动车的人: '#FFA270'
+  骑电动车的人: '#FFA270',
 }
 
 const overflowTooltipOptions = {
   effect: 'dark',
-  popperClass: 'tech-table-tooltip'
+  popperClass: 'tech-table-tooltip',
 } as const
 
-const getSecurityTagType = (level: number) => {
+const expandedRows = ref<DetectionTableRow[]>([])
+
+const toFiniteNumber = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+
+  return undefined
+}
+
+const formatNumber = (value: unknown, precision = 2) => {
+  const normalized = toFiniteNumber(value)
+  if (normalized === undefined) {
+    return '--'
+  }
+
+  return normalized.toFixed(precision).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+
+const formatDirection = (value: unknown, precision = 2) => {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim()
+  }
+
+  return formatNumber(value, precision)
+}
+
+const formatPlate = (value: unknown) => {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : ''
+}
+
+const formatTrackId = (value: unknown, fallbackIndex: number) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim()
+  }
+
+  return String(fallbackIndex + 1)
+}
+
+const getSecurityTagType = (level?: number) => {
   switch (level) {
     case 1:
       return 'success'
@@ -49,8 +128,41 @@ const getSecurityTagType = (level: number) => {
   }
 }
 
-const handleExpandChange = (row: TrafficTableRow, expandedRows: TrafficTableRow[]) => {
-  emit('expand-change', row, expandedRows)
+const tableRows = computed<DetectionTableRow[]>(() => {
+  return (props.boxes ?? []).map((box, index) => {
+    const securityLevel = toFiniteNumber(box.securityLevel)
+
+    return {
+      id: formatTrackId(box.trackId, index),
+      type: box.type,
+      plate: formatPlate(box.plate),
+      securityLevel,
+      securityLevelText: securityLevel === undefined ? '--' : `${securityLevel}级`,
+      length: formatNumber(box.objectLength),
+      width: formatNumber(box.objectWidth),
+      height: formatNumber(box.objectHeight),
+      lonSpeed: formatNumber(box.speedX),
+      latSpeed: formatNumber(box.speedY),
+      motionDir: formatDirection(box.heading),
+      speedDir: formatDirection(box.speedHeading),
+      longitude: formatNumber(box.longitude, 6),
+      latitude: formatNumber(box.latitude, 6),
+      altitude: formatNumber(box.altitude),
+      laneInfo: '',
+      lonAcc: formatNumber(box.accelerationX),
+      latAcc: formatNumber(box.accelerationY),
+      accDir: formatDirection(box.accHeading),
+    }
+  })
+})
+
+const effectiveIsTablePaused = computed(() => {
+  return props.isTablePaused || expandedRows.value.length > 0
+})
+
+const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionTableRow[]) => {
+  expandedRows.value = nextExpandedRows
+  emit('expand-change', row, nextExpandedRows)
 }
 </script>
 
@@ -63,7 +175,7 @@ const handleExpandChange = (row: TrafficTableRow, expandedRows: TrafficTableRow[
           实时识别结果
         </span>
         <div class="panel-actions">
-          <el-tag v-if="isTablePaused" type="warning" effect="dark" class="blink-anim table-status-tag">
+          <el-tag v-if="effectiveIsTablePaused" type="warning" effect="dark" class="blink-anim table-status-tag">
             自动锁定中
           </el-tag>
           <el-tag v-else type="success" effect="dark" class="table-status-tag">
@@ -84,7 +196,7 @@ const handleExpandChange = (row: TrafficTableRow, expandedRows: TrafficTableRow[
 
     <div class="table-container">
       <el-table
-        :data="tableData"
+        :data="tableRows"
         class="tech-table"
         height="100%"
         stripe
@@ -137,12 +249,14 @@ const handleExpandChange = (row: TrafficTableRow, expandedRows: TrafficTableRow[
         <el-table-column prop="securityLevel" label="安全等级" align="center" min-width="76" :show-overflow-tooltip="overflowTooltipOptions">
           <template #default="scope">
             <el-tag
+              v-if="scope.row.securityLevel !== undefined"
               effect="dark"
               :class="['security-tag', `level-${scope.row.securityLevel}`]"
               :type="getSecurityTagType(scope.row.securityLevel)"
             >
-              {{ scope.row.securityLevel }} 级
+              {{ scope.row.securityLevelText }}
             </el-tag>
+            <span v-else class="empty-text">--</span>
           </template>
         </el-table-column>
 
@@ -376,7 +490,7 @@ const handleExpandChange = (row: TrafficTableRow, expandedRows: TrafficTableRow[
 .security-tag {
   font-weight: bold;
   border: none !important;
-  width: 40px;
+  min-width: 40px;
   text-align: center;
 }
 

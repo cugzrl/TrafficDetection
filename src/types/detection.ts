@@ -14,6 +14,23 @@ export interface DetectionBox {
   trackId?: string | number
   objectId?: string | number
   score?: number
+  labelId?: number
+  securityLevel?: string | number
+  objectLength?: number
+  objectWidth?: number
+  objectHeight?: number
+  speedX?: number
+  speedY?: number
+  speedHeading?: string | number
+  accelerationX?: number
+  accelerationY?: number
+  accHeading?: string | number
+  longitude?: number
+  latitude?: number
+  altitude?: number
+  heading?: string | number
+  plate?: string
+  laneInfo?: string
   [key: string]: unknown
 }
 

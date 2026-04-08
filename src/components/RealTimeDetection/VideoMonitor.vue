@@ -223,9 +223,10 @@ const drawBoxes = (ctx: CanvasRenderingContext2D, metrics: RenderMetrics) => {
     const trackPrefix = box.trackId !== undefined && box.trackId !== null
       ? `${box.trackId} `
       : ''
-    const labelText = box.confidence !== undefined
-      ? `${trackPrefix} ${box.type} ${(box.confidence * 100).toFixed(1)}%`
-      : `${trackPrefix} ${box.type}`
+    // const labelText = box.confidence !== undefined
+    //   ? `${trackPrefix} ${box.type} ${(box.confidence * 100).toFixed(1)}%`
+    //   : `${trackPrefix} ${box.type}`
+    const labelText = `${trackPrefix} ${box.type}`
 
     ctx.beginPath()
     ctx.lineWidth = isSelected ? 2.6 : 1.8
@@ -249,7 +250,7 @@ const drawBoxes = (ctx: CanvasRenderingContext2D, metrics: RenderMetrics) => {
     ctx.fillRect(labelX, labelY, labelWidth, labelHeight)
     ctx.globalAlpha = 1
 
-    ctx.fillStyle = '#031018'
+    ctx.fillStyle = '#ffffff'
     ctx.fillText(labelText, labelX + labelPaddingX, labelY + 13)
 
     nextRenderedBoxes.push({
