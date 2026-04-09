@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
@@ -101,11 +101,14 @@ const isPlaybackBuffering = ref(false)
 const playbackBufferLabel = ref('')
 const selectedBox = ref<DetectionBox | null>(null)
 const selectedBoxKey = ref<string | null>(null)
+const selectedTrackId = ref<string | number | null>(null)
+const tableBoxes = ref<DetectionBox[]>([])
 const localPreviewUrl = ref<string | null>(null)
 const inferenceSessionStartedAt = ref<number | null>(null)
 const inferenceSessionBaseFrameIndex = ref(0)
 const lastInferenceSpeedSample = ref<InferenceSpeedSample | null>(null)
 const estimatedInferenceFps = ref<number | null>(null)
+let tableRefreshTimer: number | null = null
 const dbForm = ref<DbFormState>({
   type: 'MySQL',
   host: '',
@@ -311,6 +314,28 @@ const revokeLocalPreview = () => {
 const clearSelectedTarget = () => {
   selectedBox.value = null
   selectedBoxKey.value = null
+  selectedTrackId.value = null
+}
+
+const cloneBoxes = (nextBoxes: DetectionBox[]) => {
+  return nextBoxes.map((box) => ({ ...box }))
+}
+
+const resolveTargetIdentity = (value: unknown): string | number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim()
+    return normalized.length > 0 ? normalized : null
+  }
+
+  return null
+}
+
+const syncTableBoxes = () => {
+  tableBoxes.value = cloneBoxes(displayedBoxes.value)
 }
 
 const openConfigDrawer = () => {
@@ -318,6 +343,7 @@ const openConfigDrawer = () => {
 }
 
 const openResultsDrawer = () => {
+  syncTableBoxes()
   resultsDrawerVisible.value = true
 }
 
@@ -500,6 +526,7 @@ const setCurrentMediaSession = (media: DetectionMediaItem) => {
   currentMediaDuration.value = null
   clearInferenceSpeedEstimator()
   clearSelectedTarget()
+  tableBoxes.value = []
   resultsDrawerVisible.value = false
   detectionResultMediaId.value = null
   resetSession()
@@ -738,12 +765,15 @@ const handleBoxSelect = (box: DetectionBox | null) => {
     return
   }
 
-  const matchedIndex = displayedBoxes.value.findIndex((item) => {
-    const itemIdentity = item.objectId ?? item.trackId ?? item.id
-    const boxIdentity = box.objectId ?? box.trackId ?? box.id
+  const rawSelectionId = resolveTargetIdentity(box.trackId ?? box.objectId ?? box.id)
+  const normalizedSelectionId = rawSelectionId !== null
+    ? String(rawSelectionId)
+    : null
 
-    if (itemIdentity !== undefined && boxIdentity !== undefined) {
-      return String(itemIdentity) === String(boxIdentity)
+  const matchedIndex = displayedBoxes.value.findIndex((item) => {
+    const itemIdentity = resolveTargetIdentity(item.trackId ?? item.objectId ?? item.id)
+    if (normalizedSelectionId && itemIdentity !== null) {
+      return String(itemIdentity) === normalizedSelectionId
     }
 
     return (
@@ -756,10 +786,13 @@ const handleBoxSelect = (box: DetectionBox | null) => {
     )
   })
 
+  const matchedBox = matchedIndex >= 0 ? displayedBoxes.value[matchedIndex] : box
+  selectedTrackId.value = resolveTargetIdentity(matchedBox.trackId ?? matchedBox.objectId ?? matchedBox.id)
   selectedBoxKey.value = matchedIndex >= 0
-    ? getDetectionBoxKey(displayedBoxes.value[matchedIndex], matchedIndex)
-    : getDetectionBoxKey(box)
-  selectedBox.value = { ...box }
+    ? getDetectionBoxKey(matchedBox, matchedIndex)
+    : getDetectionBoxKey(matchedBox)
+  selectedBox.value = { ...matchedBox }
+  syncTableBoxes()
   resultsDrawerVisible.value = true
 }
 
@@ -873,19 +906,41 @@ watch(
 watch(
   displayedBoxes,
   (nextBoxes) => {
-    if (!selectedBoxKey.value) {
+    const activeSelectionId = selectedTrackId.value
+    if (activeSelectionId === null || activeSelectionId === undefined) {
       return
     }
 
-    const match = nextBoxes.find((box, index) => getDetectionBoxKey(box, index) === selectedBoxKey.value)
-    if (match) {
+    const activeSelectionKey = String(activeSelectionId)
+    const matchIndex = nextBoxes.findIndex((box) => {
+      const candidate = resolveTargetIdentity(box.trackId ?? box.objectId ?? box.id)
+      return candidate !== null && String(candidate) === activeSelectionKey
+    })
+
+    if (matchIndex >= 0) {
+      const match = nextBoxes[matchIndex]
       selectedBox.value = { ...match }
+      selectedBoxKey.value = getDetectionBoxKey(match, matchIndex)
+      return
     }
+
+    clearSelectedTarget()
   },
   { deep: true }
 )
 
+onMounted(() => {
+  syncTableBoxes()
+  tableRefreshTimer = window.setInterval(() => {
+    syncTableBoxes()
+  }, 1000)
+})
+
 onUnmounted(() => {
+  if (tableRefreshTimer !== null) {
+    window.clearInterval(tableRefreshTimer)
+    tableRefreshTimer = null
+  }
   revokeLocalPreview()
 })
 </script>
@@ -958,10 +1013,8 @@ onUnmounted(() => {
     >
       <div class="drawer-content table-drawer-content">
         <DetectionTable
-          :boxes="displayedBoxes"
-          :selected-box="selectedBox"
-          :selected-box-key="selectedBoxKey"
-          :current-frame-index="currentFrameIndex"
+          :boxes="tableBoxes"
+          :selected-track-id="selectedTrackId"
           :show-close-button="true"
           @select-box="handleBoxSelect"
           @close="closeResultsDrawer"
@@ -1129,6 +1182,3 @@ onUnmounted(() => {
   min-height: 0;
 }
 </style>
-
-
-

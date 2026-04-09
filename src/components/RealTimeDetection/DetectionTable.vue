@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { List } from '@element-plus/icons-vue'
 import type { DetectionBox } from '../../types/detection'
@@ -7,7 +7,7 @@ interface DetectionTableRow {
   id: string
   type: string
   plate: string
-  securityLevel?: number
+  securityLevel?: string | number
   securityLevelText: string
   length: string
   width: string
@@ -23,26 +23,22 @@ interface DetectionTableRow {
   lonAcc: string
   latAcc: string
   accDir: string
+  sourceBox: DetectionBox
 }
 
 const props = withDefaults(defineProps<{
   boxes?: DetectionBox[]
-  isTablePaused?: boolean
   showCloseButton?: boolean
-  selectedBox?: DetectionBox | null
-  selectedBoxKey?: string | null
-  currentFrameIndex?: number | null
+  selectedTrackId?: string | number | null
 }>(), {
   boxes: () => [],
-  isTablePaused: false,
   showCloseButton: false,
-  selectedBox: null,
-  selectedBoxKey: null,
-  currentFrameIndex: null,
+  selectedTrackId: null,
 })
 
 const emit = defineEmits<{
   (e: 'expand-change', row: DetectionTableRow, expandedRows: DetectionTableRow[]): void
+  (e: 'select-box', box: DetectionBox): void
   (e: 'close'): void
 }>()
 
@@ -53,15 +49,15 @@ const colorMap: Record<string, string> = {
   公交车: '#927FF0',
   行人: '#98F07F',
   骑自行车的人: '#F0DD7F',
-  骑电动车的人: '#FFA270',
+  骑电动车的人: '#FFA270'
 }
 
 const overflowTooltipOptions = {
   effect: 'dark',
-  popperClass: 'tech-table-tooltip',
+  popperClass: 'tech-table-tooltip'
 } as const
 
-const expandedRows = ref<DetectionTableRow[]>([])
+const expandRowKeys = ref<string[]>([])
 
 const toFiniteNumber = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -111,8 +107,36 @@ const formatTrackId = (value: unknown, fallbackIndex: number) => {
   return String(fallbackIndex + 1)
 }
 
-const getSecurityTagType = (level?: number) => {
-  switch (level) {
+const normalizeSecurityLevel = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const normalized = value.trim()
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : normalized
+  }
+
+  return undefined
+}
+
+const formatSecurityLevel = (value: string | number | undefined) => {
+  if (value === undefined) {
+    return '--'
+  }
+
+  if (typeof value === 'number') {
+    return `${value}级`
+  }
+
+  return value
+}
+
+const getSecurityTagType = (level?: string | number) => {
+  const numericLevel = normalizeSecurityLevel(level)
+
+  switch (numericLevel) {
     case 1:
       return 'success'
     case 2:
@@ -129,15 +153,15 @@ const getSecurityTagType = (level?: number) => {
 }
 
 const tableRows = computed<DetectionTableRow[]>(() => {
-  return (props.boxes ?? []).map((box, index) => {
-    const securityLevel = toFiniteNumber(box.securityLevel)
+  const rows = (props.boxes ?? []).map((box, index) => {
+    const securityLevel = normalizeSecurityLevel(box.securityLevel)
 
     return {
       id: formatTrackId(box.trackId, index),
       type: box.type,
       plate: formatPlate(box.plate),
       securityLevel,
-      securityLevelText: securityLevel === undefined ? '--' : `${securityLevel}级`,
+      securityLevelText: formatSecurityLevel(securityLevel),
       length: formatNumber(box.objectLength),
       width: formatNumber(box.objectWidth),
       height: formatNumber(box.objectHeight),
@@ -152,17 +176,48 @@ const tableRows = computed<DetectionTableRow[]>(() => {
       lonAcc: formatNumber(box.accelerationX),
       latAcc: formatNumber(box.accelerationY),
       accDir: formatDirection(box.accHeading),
+      sourceBox: box
     }
+  })
+
+  const selectedId = props.selectedTrackId !== null && props.selectedTrackId !== undefined
+    ? String(props.selectedTrackId)
+    : ''
+
+  if (!selectedId) {
+    return rows
+  }
+
+  return [...rows].sort((left, right) => {
+    if (left.id === selectedId && right.id !== selectedId) {
+      return -1
+    }
+
+    if (left.id !== selectedId && right.id === selectedId) {
+      return 1
+    }
+
+    return 0
   })
 })
 
-const effectiveIsTablePaused = computed(() => {
-  return props.isTablePaused || expandedRows.value.length > 0
-})
+const getRowKey = (row: DetectionTableRow) => row.id
 
-const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionTableRow[]) => {
-  expandedRows.value = nextExpandedRows
-  emit('expand-change', row, nextExpandedRows)
+const getRowClassName = ({ row }: { row: DetectionTableRow }) => {
+  if (props.selectedTrackId !== null && props.selectedTrackId !== undefined && row.id === String(props.selectedTrackId)) {
+    return 'is-target-selected'
+  }
+
+  return ''
+}
+
+const handleExpandChange = (row: DetectionTableRow, expandedRows: DetectionTableRow[]) => {
+  expandRowKeys.value = expandedRows.map((item) => item.id)
+  emit('expand-change', row, expandedRows)
+}
+
+const handleRowClick = (row: DetectionTableRow) => {
+  emit('select-box', row.sourceBox)
 }
 </script>
 
@@ -175,11 +230,8 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
           实时识别结果
         </span>
         <div class="panel-actions">
-          <el-tag v-if="effectiveIsTablePaused" type="warning" effect="dark" class="blink-anim table-status-tag">
-            自动锁定中
-          </el-tag>
-          <el-tag v-else type="success" effect="dark" class="table-status-tag">
-            实时刷新中
+          <el-tag type="success" effect="dark" class="table-status-tag">
+            同步刷新中
           </el-tag>
           <button
             v-if="showCloseButton"
@@ -197,12 +249,16 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
     <div class="table-container">
       <el-table
         :data="tableRows"
+        :row-key="getRowKey"
+        :expand-row-keys="expandRowKeys"
+        :row-class-name="getRowClassName"
         class="tech-table"
         height="100%"
         stripe
         preserve-expanded-content
         tooltip-effect="dark"
         @expand-change="handleExpandChange"
+        @row-click="handleRowClick"
       >
         <el-table-column type="expand" width="12">
           <template #default="scope">
@@ -214,8 +270,8 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
                 <el-descriptions-item label="海拔">{{ scope.row.altitude }}</el-descriptions-item>
 
                 <el-descriptions-item label="车道信息">{{ scope.row.laneInfo || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="纵向加速度">{{ scope.row.lonAcc }}</el-descriptions-item>
-                <el-descriptions-item label="横向加速度">{{ scope.row.latAcc }}</el-descriptions-item>
+                <el-descriptions-item label="纵向加速度(m/s)">{{ scope.row.lonAcc }}</el-descriptions-item>
+                <el-descriptions-item label="横向加速度(m/s)">{{ scope.row.latAcc }}</el-descriptions-item>
                 <el-descriptions-item label="加速度方向">{{ scope.row.accDir }}</el-descriptions-item>
               </el-descriptions>
             </div>
@@ -239,28 +295,7 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
           </template>
         </el-table-column>
 
-        <el-table-column prop="plate" label="车牌号" align="center" min-width="98" :show-overflow-tooltip="overflowTooltipOptions">
-          <template #default="scope">
-            <span v-if="scope.row.plate" class="plate-text">{{ scope.row.plate }}</span>
-            <span v-else class="empty-text">--</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="securityLevel" label="安全等级" align="center" min-width="76" :show-overflow-tooltip="overflowTooltipOptions">
-          <template #default="scope">
-            <el-tag
-              v-if="scope.row.securityLevel !== undefined"
-              effect="dark"
-              :class="['security-tag', `level-${scope.row.securityLevel}`]"
-              :type="getSecurityTagType(scope.row.securityLevel)"
-            >
-              {{ scope.row.securityLevelText }}
-            </el-tag>
-            <span v-else class="empty-text">--</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="尺寸" align="center" min-width="145" :show-overflow-tooltip="overflowTooltipOptions">
+        <el-table-column label="尺寸(m)" align="center" min-width="145" :show-overflow-tooltip="overflowTooltipOptions">
           <template #default="scope">
             <span class="size-text">{{ scope.row.length }}×{{ scope.row.width }}×{{ scope.row.height }}</span>
           </template>
@@ -268,7 +303,7 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
 
         <el-table-column
           prop="lonSpeed"
-          label="纵向速度"
+          label="纵向速度(m/s)"
           align="center"
           min-width="80"
           :show-overflow-tooltip="overflowTooltipOptions"
@@ -280,7 +315,7 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
 
         <el-table-column
           prop="latSpeed"
-          label="横向速度"
+          label="横向速度(m/s)"
           align="center"
           min-width="80"
           :show-overflow-tooltip="overflowTooltipOptions"
@@ -299,6 +334,27 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
         >
           <template #default="scope">
             <span class="metric-cell-text">{{ scope.row.motionDir }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="plate" label="车牌号" align="center" min-width="98" :show-overflow-tooltip="overflowTooltipOptions">
+          <template #default="scope">
+            <span v-if="scope.row.plate" class="plate-text">{{ scope.row.plate }}</span>
+            <span v-else class="empty-text">--</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="securityLevel" label="安全等级" align="center" min-width="76" :show-overflow-tooltip="overflowTooltipOptions">
+          <template #default="scope">
+            <el-tag
+              v-if="scope.row.securityLevel !== undefined"
+              effect="dark"
+              :class="['security-tag', `level-${scope.row.securityLevel}`]"
+              :type="getSecurityTagType(scope.row.securityLevel)"
+            >
+              {{ scope.row.securityLevelText }}
+            </el-tag>
+            <span v-else class="empty-text">--</span>
           </template>
         </el-table-column>
       </el-table>
@@ -421,6 +477,12 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
   background-color: rgba(0, 168, 255, 0.08) !important;
 }
 
+:deep(.tech-table .el-table__row.is-target-selected > td.el-table__cell),
+:deep(.tech-table .el-table__row.is-target-selected.el-table__row--striped > td.el-table__cell) {
+  background-color: rgba(0, 210, 255, 0.2) !important;
+  box-shadow: inset 0 0 18px rgba(0, 210, 255, 0.24);
+}
+
 :deep(.tech-table th.el-table__cell) {
   border-bottom: 2px solid rgba(0, 210, 255, 0.6) !important;
   font-weight: bold;
@@ -485,6 +547,7 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
   font-size: 11px;
   max-width: 100%;
   text-align: center;
+  opacity: 0.6;
 }
 
 .security-tag {
@@ -492,6 +555,7 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
   border: none !important;
   min-width: 40px;
   text-align: center;
+  opacity: 0.6;
 }
 
 .level-1 {
@@ -627,16 +691,6 @@ const handleExpandChange = (row: DetectionTableRow, nextExpandedRows: DetectionT
   border-color: #00ffff;
   box-shadow: 0 0 16px rgba(0, 210, 255, 0.35), inset 0 0 10px rgba(0, 210, 255, 0.16);
   transform: scale(1.05);
-}
-
-.blink-anim {
-  animation: blink 1.5s infinite ease-in-out;
-}
-
-@keyframes blink {
-  0% { opacity: 1; box-shadow: 0 0 15px rgba(0, 210, 255, 0.8), 0 0 10px rgba(0, 210, 255, 0.2) inset; }
-  50% { opacity: 0.6; box-shadow: 0 0 5px rgba(0, 210, 255, 0.3), 0 0 10px rgba(0, 210, 255, 0.2) inset; }
-  100% { opacity: 1; box-shadow: 0 0 15px rgba(0, 210, 255, 0.8), 0 0 10px rgba(0, 210, 255, 0.2) inset; }
 }
 
 :global(.tech-table-tooltip) {

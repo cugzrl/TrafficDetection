@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { PictureFilled, VideoCamera } from '@element-plus/icons-vue'
 import type {
@@ -28,7 +28,7 @@ interface RenderedBoxMetrics {
 }
 
 type BufferState = 'none' | 'initial' | 'rebuffer'
-
+type LabelDisplayField = 'trackId' | 'type' | 'confidence'
 const props = withDefaults(defineProps<{
   mediaKind?: MediaKind
   mediaSrc?: string
@@ -76,7 +76,12 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 const imageRef = ref<HTMLImageElement | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
 const renderedBoxes = ref<RenderedBoxMetrics[]>([])
-
+const labelDisplayFields = ref<LabelDisplayField[]>(['trackId', 'type'])
+const labelDisplayOptions: Array<{ label: string; value: LabelDisplayField }> = [
+  { label: '跟踪ID', value: 'trackId' },
+  { label: '目标类型', value: 'type' },
+  { label: '置信度', value: 'confidence' }
+]
 let resizeObserver: ResizeObserver | null = null
 let frameLoopId: number | null = null
 let lastLoadedMediaKey = ''
@@ -220,38 +225,66 @@ const drawBoxes = (ctx: CanvasRenderingContext2D, metrics: RenderMetrics) => {
     const color = COLOR_MAP[box.type] || '#00d2ff'
     const boxKey = getDetectionBoxKey(box, index)
     const isSelected = props.selectedBoxKey === boxKey
-    const trackPrefix = box.trackId !== undefined && box.trackId !== null
-      ? `${box.trackId} `
-      : ''
-    // const labelText = box.confidence !== undefined
-    //   ? `${trackPrefix} ${box.type} ${(box.confidence * 100).toFixed(1)}%`
-    //   : `${trackPrefix} ${box.type}`
-    const labelText = `${trackPrefix} ${box.type}`
+    const labelParts: string[] = []
+
+    if (labelDisplayFields.value.includes('trackId') && box.trackId !== undefined && box.trackId !== null) {
+      labelParts.push(String(box.trackId))
+    }
+
+    if (labelDisplayFields.value.includes('type')) {
+      labelParts.push(box.type)
+    }
+
+    if (labelDisplayFields.value.includes('confidence') && typeof box.confidence === 'number' && Number.isFinite(box.confidence)) {
+      labelParts.push(`${(box.confidence * 100).toFixed(1)}%`)
+    }
+
+    const labelText = labelParts.join(' ')
+
+    if (isSelected) {
+      ctx.fillStyle = color
+      ctx.globalAlpha = 0.2
+      ctx.fillRect(x, y, width, height)
+      ctx.globalAlpha = 1
+    }
 
     ctx.beginPath()
-    ctx.lineWidth = isSelected ? 2.6 : 1.8
+    ctx.lineWidth = isSelected ? 3.2 : 1.8
     ctx.strokeStyle = color
     ctx.shadowColor = color
-    ctx.shadowBlur = isSelected ? 14 : 8
+    ctx.shadowBlur = isSelected ? 22 : 8
     ctx.rect(x, y, width, height)
     ctx.stroke()
+
+    if (isSelected) {
+      ctx.beginPath()
+      ctx.lineWidth = 1.4
+      ctx.strokeStyle = '#eaffff'
+      ctx.shadowColor = color
+      ctx.shadowBlur = 28
+      ctx.rect(x, y, width, height)
+      ctx.stroke()
+    }
+
     ctx.shadowBlur = 0
 
-    const labelPaddingX = 8
-    const labelHeight = 18
-    ctx.font = '12px Microsoft YaHei'
-    const textWidth = ctx.measureText(labelText).width
-    const labelWidth = textWidth + labelPaddingX * 2
-    const labelX = x
-    const labelY = Math.max(0, y - labelHeight - 2)
+    if (labelText) {
+      const labelPaddingX = 8
+      const labelHeight = 18
+      ctx.font = '12px Microsoft YaHei'
+      const textWidth = ctx.measureText(labelText).width
+      const labelWidth = textWidth + labelPaddingX * 2
+      const labelX = x
+      const labelY = Math.max(0, y - labelHeight - 2)
 
-    ctx.fillStyle = color
-    ctx.globalAlpha = isSelected ? 0.95 : 0.82
-    ctx.fillRect(labelX, labelY, labelWidth, labelHeight)
-    ctx.globalAlpha = 1
+      ctx.fillStyle = color
+      ctx.globalAlpha = isSelected ? 0.95 : 0.82
+      ctx.fillRect(labelX, labelY, labelWidth, labelHeight)
+      ctx.globalAlpha = 1
 
-    ctx.fillStyle = '#ffffff'
-    ctx.fillText(labelText, labelX + labelPaddingX, labelY + 13)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillText(labelText, labelX + labelPaddingX, labelY + 13)
+    }
 
     nextRenderedBoxes.push({
       key: boxKey,
@@ -457,6 +490,14 @@ watch(
 )
 
 watch(
+  labelDisplayFields,
+  () => {
+    renderOverlay()
+  },
+  { deep: true }
+)
+
+watch(
   () => [props.mediaSrc, props.fallbackFrameSrc, props.mediaKind],
   () => {
     lastLoadedMediaKey = ''
@@ -539,6 +580,20 @@ defineExpose({
       <div class="media-badge">
         <span class="badge-label">{{ mediaModeLabel }}</span>
         <span class="badge-value">{{ mediaLabel }}</span>
+      </div>
+
+      <div class="label-toggle-panel">
+        <span class="label-toggle-title">标签显示</span>
+        <el-checkbox-group v-model="labelDisplayFields" class="label-toggle-group">
+          <el-checkbox
+            v-for="option in labelDisplayOptions"
+            :key="option.value"
+            :label="option.value"
+            class="label-toggle-item"
+          >
+            {{ option.label }}
+          </el-checkbox>
+        </el-checkbox-group>
       </div>
 
       <div v-if="currentFrameIndex !== null && displayMode === 'video'" class="frame-badge">
@@ -702,17 +757,96 @@ defineExpose({
 .media-badge {
   top: 12px;
   left: 12px;
+  right: calc(50% + 180px);
   display: flex;
-  flex-direction: column;
-  gap: 1px;
-  max-width: calc(100% - 28px);
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid rgba(0, 210, 255, 0.36);
+  background: linear-gradient(90deg, rgba(0, 28, 52, 0.84), rgba(4, 20, 38, 0.78));
+  box-shadow: 0 0 18px rgba(0, 210, 255, 0.18), inset 0 0 12px rgba(0, 210, 255, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .frame-badge {
-  top: 16px;
+  top: 12px;
   right: 14px;
-  color: #00ffff;
+  color: #00d2ff;
+  font-weight:600;
   text-shadow: 0 0 6px rgba(0, 255, 255, 0.5);
+  border: 1px solid rgba(0, 210, 255, 0.36);
+  background: linear-gradient(90deg, rgba(0, 28, 52, 0.84), rgba(4, 20, 38, 0.78));
+  box-shadow: 0 0 18px rgba(0, 210, 255, 0.18), inset 0 0 12px rgba(0, 210, 255, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.label-toggle-panel {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 1.5px 10px;
+  border: 1px solid rgba(0, 210, 255, 0.36);
+  background: linear-gradient(90deg, rgba(0, 28, 52, 0.84), rgba(4, 20, 38, 0.78));
+  box-shadow: 0 0 18px rgba(0, 210, 255, 0.18), inset 0 0 12px rgba(0, 210, 255, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.label-toggle-title {
+  color: #00d2ff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-shadow: 0 0 8px rgba(0, 210, 255, 0.42);
+  white-space: nowrap;
+}
+
+.label-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.label-toggle-item {
+  margin-right: 0;
+}
+
+:deep(.label-toggle-item .el-checkbox__input.is-checked .el-checkbox__inner) {
+  background: linear-gradient(180deg, #00ffff 0%, #00b8ff 100%);
+  border-color: rgba(0, 255, 255, 0.92);
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.42);
+}
+
+:deep(.label-toggle-item .el-checkbox__inner) {
+  background: rgba(2, 18, 35, 0.74);
+  border-color: rgba(0, 210, 255, 0.5);
+  box-shadow: inset 0 0 8px rgba(0, 210, 255, 0.1);
+}
+
+:deep(.label-toggle-item .el-checkbox__input.is-focus .el-checkbox__inner),
+:deep(.label-toggle-item:hover .el-checkbox__inner) {
+  border-color: #00ffff;
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.28);
+}
+
+:deep(.label-toggle-item .el-checkbox__label) {
+  color: #c9f7ff;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  text-shadow: 0 0 6px rgba(0, 210, 255, 0.25);
+  padding-left: 6px;
+}
+
+:deep(.label-toggle-item .el-checkbox__input.is-checked + .el-checkbox__label) {
+  color: #ffffff;
+  text-shadow: 0 0 8px rgba(0, 255, 255, 0.45);
 }
 
 .initial-buffer-indicator,
@@ -859,6 +993,9 @@ defineExpose({
 
 .badge-label {
   color: #00d2ff;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .badge-value {
@@ -868,6 +1005,8 @@ defineExpose({
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .empty-state {
@@ -942,6 +1081,7 @@ defineExpose({
   z-index: 2;
 }
 </style>
+
 
 
 

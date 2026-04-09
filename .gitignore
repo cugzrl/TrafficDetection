@@ -4,6 +4,7 @@ public/
 dist/
 .vite-check/
 .vite-check-20260408/
+.vite-check-20260408-b/
 TrafficDetection_Server/yolox/
 Track/
 agents.md

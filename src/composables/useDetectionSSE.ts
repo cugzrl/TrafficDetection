@@ -15,6 +15,7 @@ interface DetectionSSEFramePayload {
   labels?: number[]
   track_ids?: Array<string | number>
   securitylevel?: Array<string | number>
+  security_level?: Array<string | number>
   length?: number[]
   width?: number[]
   height?: number[]
@@ -105,7 +106,11 @@ const normalizeDetectionFrame = (value: unknown): DetectionFrameResult | null =>
   const rawNames = Array.isArray(value.names) ? value.names : []
   const rawLabels = Array.isArray(value.labels) ? value.labels : []
   const rawTrackIds = Array.isArray(value.track_ids) ? value.track_ids : []
-  const rawSecurityLevels = Array.isArray(value.securitylevel) ? value.securitylevel : []
+  const rawSecurityLevels = Array.isArray(value.security_level)
+    ? value.security_level
+    : Array.isArray(value.securitylevel)
+      ? value.securitylevel
+      : []
   const rawLengths = Array.isArray(value.length) ? value.length : []
   const rawObjectWidths = Array.isArray(value.width) ? value.width : []
   const rawObjectHeights = Array.isArray(value.height) ? value.height : []
@@ -502,3 +507,4 @@ export const useDetectionSSE = (options: UseDetectionSSEOptions = {}) => {
     clearResults,
   }
 }
+
