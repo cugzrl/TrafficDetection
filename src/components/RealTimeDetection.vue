@@ -1008,6 +1008,8 @@ onUnmounted(() => {
       direction="rtl"
       size="40%"
       :modal="false"
+      modal-penetrable
+      modal-class="results-drawer-overlay"
       class="tech-drawer results-drawer"
       :with-header="false"
     >
@@ -1180,5 +1182,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+:global(.results-drawer-overlay) {
+  background: transparent !important;
+}
+
+:global(.results-drawer-overlay.is-penetrable) {
+  pointer-events: none;
+}
+
+:global(.results-drawer-overlay.is-penetrable .el-drawer) {
+  pointer-events: auto;
 }
 </style>

@@ -7,4 +7,5 @@ dist/
 .vite-check-20260408-b/
 TrafficDetection_Server/yolox/
 Track/
+PlateOcr/
 agents.md

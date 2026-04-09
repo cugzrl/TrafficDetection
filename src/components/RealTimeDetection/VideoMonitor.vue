@@ -71,6 +71,62 @@ const COLOR_MAP: Record<string, string> = {
   骑电动车的人: '#FFA270'
 }
 
+const parseHexColor = (color: string) => {
+  const normalized = color.replace('#', '').trim()
+  if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(normalized)) {
+    return null
+  }
+
+  const expanded = normalized.length === 3
+    ? normalized.split('').map((char) => `${char}${char}`).join('')
+    : normalized
+
+  const red = Number.parseInt(expanded.slice(0, 2), 16)
+  const green = Number.parseInt(expanded.slice(2, 4), 16)
+  const blue = Number.parseInt(expanded.slice(4, 6), 16)
+
+  return { red, green, blue }
+}
+
+const toRgba = (color: string, alpha: number) => {
+  const parsed = parseHexColor(color)
+  if (!parsed) {
+    return color
+  }
+
+  return `rgba(${parsed.red}, ${parsed.green}, ${parsed.blue}, ${alpha})`
+}
+
+const drawSelectedBoxMask = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  color: string
+) => {
+  ctx.save()
+  ctx.fillStyle = color
+  ctx.globalAlpha = 0.5
+  ctx.fillRect(x, y, width, height)
+  ctx.globalAlpha = 1
+
+  ctx.beginPath()
+  ctx.rect(x, y, width, height)
+  ctx.clip()
+
+  const stripeGap = Math.max(8, Math.min(14, height / 5))
+  const stripeHeight = Math.max(1.5, Math.min(3, stripeGap * 0.24))
+  const stripeColor = toRgba(color, 0.34)
+
+  ctx.fillStyle = stripeColor
+  for (let stripeY = y + stripeGap * 0.45; stripeY < y + height; stripeY += stripeGap) {
+    ctx.fillRect(x, stripeY, width, stripeHeight)
+  }
+
+  ctx.restore()
+}
+
 const monitorRef = ref<HTMLDivElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const imageRef = ref<HTMLImageElement | null>(null)
@@ -242,10 +298,7 @@ const drawBoxes = (ctx: CanvasRenderingContext2D, metrics: RenderMetrics) => {
     const labelText = labelParts.join(' ')
 
     if (isSelected) {
-      ctx.fillStyle = color
-      ctx.globalAlpha = 0.2
-      ctx.fillRect(x, y, width, height)
-      ctx.globalAlpha = 1
+      drawSelectedBoxMask(ctx, x, y, width, height, color)
     }
 
     ctx.beginPath()

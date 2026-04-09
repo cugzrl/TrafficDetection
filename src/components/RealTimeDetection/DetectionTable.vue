@@ -52,6 +52,14 @@ const colorMap: Record<string, string> = {
   骑电动车的人: '#FFA270'
 }
 
+const securityColorMap: Record<string, string> = {
+  '1': '#9BFF69',
+  '2': '#5FD3ED',
+  '3': '#F0DD51',
+  '4': '#FFA73C',
+  '5': '#FF6262'
+}
+
 const overflowTooltipOptions = {
   effect: 'dark',
   popperClass: 'tech-table-tooltip'
@@ -133,23 +141,53 @@ const formatSecurityLevel = (value: string | number | undefined) => {
   return value
 }
 
-const getSecurityTagType = (level?: string | number) => {
-  const numericLevel = normalizeSecurityLevel(level)
-
-  switch (numericLevel) {
-    case 1:
-      return 'success'
-    case 2:
-      return 'info'
-    case 3:
-      return 'warning'
-    case 4:
-      return 'warning'
-    case 5:
-      return 'danger'
-    default:
-      return 'info'
+const parseHexColor = (color: string) => {
+  const normalized = color.replace('#', '').trim()
+  if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(normalized)) {
+    return null
   }
+
+  const expanded = normalized.length === 3
+    ? normalized.split('').map((char) => `${char}${char}`).join('')
+    : normalized
+
+  const red = Number.parseInt(expanded.slice(0, 2), 16)
+  const green = Number.parseInt(expanded.slice(2, 4), 16)
+  const blue = Number.parseInt(expanded.slice(4, 6), 16)
+
+  return { red, green, blue }
+}
+
+const toRgba = (color: string, alpha: number) => {
+  const parsed = parseHexColor(color)
+  if (!parsed) {
+    return color
+  }
+
+  return `rgba(${parsed.red}, ${parsed.green}, ${parsed.blue}, ${alpha})`
+}
+
+const getGlassTagStyle = (baseColor: string) => {
+  return {
+    '--tag-base-color': baseColor,
+    '--tag-surface-start': toRgba(baseColor, 0.92),
+    '--tag-surface-mid': toRgba(baseColor, 0.76),
+    '--tag-surface-end': toRgba(baseColor, 0.54),
+    '--tag-border-color': toRgba(baseColor, 0.72),
+    '--tag-glow-color': toRgba(baseColor, 0.62),
+    '--tag-glow-soft-color': toRgba(baseColor, 0.32),
+    '--tag-highlight-color': toRgba(baseColor, 0.22),
+    '--tag-sheen-color': toRgba(baseColor, 0.14)
+  }
+}
+
+const getTypeTagStyle = (type: string) => {
+  return getGlassTagStyle(colorMap[type] || '#00d2ff')
+}
+
+const getSecurityTagStyle = (level?: string | number) => {
+  const normalizedLevel = level !== undefined ? String(level) : ''
+  return getGlassTagStyle(securityColorMap[normalizedLevel] || '#5FD3ED')
 }
 
 const tableRows = computed<DetectionTableRow[]>(() => {
@@ -289,7 +327,7 @@ const handleRowClick = (row: DetectionTableRow) => {
 
         <el-table-column prop="type" label="目标类型" align="center" min-width="95" :show-overflow-tooltip="overflowTooltipOptions">
           <template #default="scope">
-            <el-tag effect="dark" class="type-tag" :style="{ backgroundColor: colorMap[scope.row.type] }">
+            <el-tag effect="dark" class="type-tag tech-glass-tag" :style="getTypeTagStyle(scope.row.type)">
               {{ scope.row.type }}
             </el-tag>
           </template>
@@ -349,8 +387,8 @@ const handleRowClick = (row: DetectionTableRow) => {
             <el-tag
               v-if="scope.row.securityLevel !== undefined"
               effect="dark"
-              :class="['security-tag', `level-${scope.row.securityLevel}`]"
-              :type="getSecurityTagType(scope.row.securityLevel)"
+              :class="['security-tag', 'tech-glass-tag', `level-${scope.row.securityLevel}`]"
+              :style="getSecurityTagStyle(scope.row.securityLevel)"
             >
               {{ scope.row.securityLevelText }}
             </el-tag>
@@ -540,54 +578,118 @@ const handleRowClick = (row: DetectionTableRow) => {
   letter-spacing: 0.2px;
 }
 
+.tech-glass-tag {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  color: #f5feff !important;
+  border: 1px solid var(--tag-border-color, rgba(0, 210, 255, 0.45)) !important;
+  background:
+    linear-gradient(
+      90deg,
+      var(--tag-surface-start, rgba(0, 210, 255, 0.92)) 0%,
+      var(--tag-surface-mid, rgba(0, 210, 255, 0.76)) 56%,
+      var(--tag-surface-end, rgba(0, 210, 255, 0.54)) 100%
+    ) !important;
+  box-shadow:
+    0 0 16px var(--tag-glow-soft-color, rgba(0, 210, 255, 0.28)),
+    0 0 8px var(--tag-glow-color, rgba(0, 210, 255, 0.45)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 0 14px var(--tag-glow-soft-color, rgba(0, 210, 255, 0.22)) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  text-shadow:
+    0 0 10px var(--tag-glow-color, rgba(0, 210, 255, 0.6)),
+    0 0 2px rgba(255, 255, 255, 0.55);
+}
+
+.tech-glass-tag::before,
+.tech-glass-tag::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tech-glass-tag::before {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.24) 0%,
+      rgba(255, 255, 255, 0.1) 18%,
+      transparent 45%
+    );
+  opacity: 0.9;
+}
+
+.tech-glass-tag::after {
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--tag-highlight-color, rgba(0, 210, 255, 0.2)) 72%,
+      var(--tag-sheen-color, rgba(0, 210, 255, 0.14)) 100%
+    );
+  mix-blend-mode: screen;
+}
+
+.tech-glass-tag :deep(.el-tag__content) {
+  position: relative;
+  z-index: 1;
+}
+
 .type-tag {
   font-weight: bold;
-  border: none !important;
+  border-radius: 999px !important;
   width: 93px;
+  box-sizing: border-box;
+  justify-content: center;
   font-size: 11px;
   max-width: 100%;
   text-align: center;
-  opacity: 0.6;
+  letter-spacing: 0.4px;
+  padding-inline: 10px;
 }
 
 .security-tag {
   font-weight: bold;
-  border: none !important;
+  border-radius: 999px !important;
   min-width: 40px;
+  box-sizing: border-box;
+  justify-content: center;
   text-align: center;
-  opacity: 0.6;
-}
-
-.level-1 {
-  background-color: rgba(155, 255, 105, 0.825) !important;
-  box-shadow: 0 0 10px rgba(103, 194, 58, 0.5);
-}
-
-.level-2 {
-  background-color: rgba(95, 211, 237, 0.908) !important;
-  box-shadow: 0 0 10px rgba(0, 210, 255, 0.5);
-}
-
-.level-3 {
-  background-color: rgba(240, 221, 81, 0.942) !important;
-  box-shadow: 0 0 10px rgba(230, 162, 60, 0.5);
-}
-
-.level-4 {
-  background-color: rgba(255, 167, 60, 0.904) !important;
-  box-shadow: 0 0 10px rgba(255, 140, 0, 0.6);
+  letter-spacing: 0.4px;
+  padding-inline: 8px;
 }
 
 .level-5 {
-  background-color: rgba(255, 98, 98, 0.9) !important;
-  box-shadow: 0 0 15px rgba(245, 108, 108, 0.8), 0 0 5px rgba(245, 108, 108, 0.8) inset;
   animation: pulse-danger 1.5s infinite;
 }
 
 @keyframes pulse-danger {
-  0% { box-shadow: 0 0 10px rgba(245, 108, 108, 0.8); }
-  50% { box-shadow: 0 0 20px rgba(245, 108, 108, 1), 0 0 10px rgba(245, 108, 108, 0.8) inset; }
-  100% { box-shadow: 0 0 10px rgba(245, 108, 108, 0.8); }
+  0% {
+    box-shadow:
+      0 0 18px var(--tag-glow-soft-color, rgba(255, 98, 98, 0.34)),
+      0 0 8px var(--tag-glow-color, rgba(255, 98, 98, 0.58)),
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      inset 0 0 14px var(--tag-glow-soft-color, rgba(255, 98, 98, 0.24));
+  }
+
+  50% {
+    box-shadow:
+      0 0 24px var(--tag-glow-soft-color, rgba(255, 98, 98, 0.44)),
+      0 0 14px var(--tag-glow-color, rgba(255, 98, 98, 0.72)),
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      inset 0 0 18px var(--tag-glow-soft-color, rgba(255, 98, 98, 0.32));
+  }
+
+  100% {
+    box-shadow:
+      0 0 18px var(--tag-glow-soft-color, rgba(255, 98, 98, 0.34)),
+      0 0 8px var(--tag-glow-color, rgba(255, 98, 98, 0.58)),
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      inset 0 0 14px var(--tag-glow-soft-color, rgba(255, 98, 98, 0.24));
+  }
 }
 
 :deep(.el-table__expanded-cell) {
