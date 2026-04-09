@@ -189,14 +189,12 @@ def _iou(a, b):
     return inter / (area_a + area_b - inter + 1e-9)
 
 class Fasttracker(object):
-    def __init__(self, args, config, frame_rate=30):
+    def __init__(self, config, frame_rate=30):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
         self.removed_stracks = []  # type: list[STrack]
 
         self.frame_id = 0
-        self.args = args
-        self.mot20 = bool(getattr(args, "mot20", False))
         self._track_count = 0
 
         self.det_thresh = config["track_thresh"]
@@ -291,8 +289,6 @@ class Fasttracker(object):
         # Predict the current location with KF
         STrack.multi_predict(strack_pool)
         dists = matching.iou_distance(strack_pool, detections)
-        if not self.mot20:
-            dists = matching.fuse_score(dists, detections)
         matches, u_track, u_detection = matching.linear_assignment(dists, thresh=self.match_thresh)
 
         for itracked, idet in matches:
@@ -394,8 +390,6 @@ class Fasttracker(object):
         '''Deal with unconfirmed tracks, usually tracks with only one beginning frame'''
         detections = [detections[i] for i in u_detection]
         dists = matching.iou_distance(unconfirmed, detections)
-        if not self.mot20:
-            dists = matching.fuse_score(dists, detections)
         matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=0.7)
         for itracked, idet in matches:
             unconfirmed[itracked].update(detections[idet], self.frame_id)

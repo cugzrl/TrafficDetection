@@ -8,7 +8,7 @@ detect:
   class_names: ["汽车", "面包车", "公交车", "三轮车", "骑电动车的人", "骑自行车的人", "行人"]
   
   # video
-  sample_rate: 2
+  sample_rate: 1
 
   # frame
   image_sizes: [640, 640]
@@ -16,11 +16,10 @@ detect:
 
   upload_dir: "videos"
 
-track:
+tracker:
   track_thresh: 0.01
   track_buffer: 20
   match_thresh: 0.5
-  min_box_area: 50
   reset_velocity_offset_occ: 3
   reset_pos_offset_occ: 2
   enlarge_bbox_occ: 1.1

@@ -7,7 +7,7 @@ defineProps<{
 <template>
   <el-header class="header" height="auto">
     <div class="header-top">
-      <h1 class="title">智能交通实时监测系统</h1>
+      <h1 class="title">超视距及小目标交通目标识别算法演示系统</h1>
       <div class="real-time">{{ currentTime }}</div>
     </div>
     <div class="title-decoration">
